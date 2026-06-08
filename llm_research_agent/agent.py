@@ -152,6 +152,11 @@ agent = create_deep_agent(
     system_prompt=system_prompt,
     backend=backend,
     skills=["/skills/"],
+    # On a fresh memory repo, reads of /memory/*.md surface a not-found error
+    # (the CompositeBackend forwards the post-strip virtual path to the inner
+    # backend, so the message reads `File '/AGENTS.md' not found`). That is
+    # expected on first run — proceed with research and persist findings via
+    # write_file at the end. See the system prompt's fresh-session note.
     memory=MEMORY_SOURCES,
     subagents=async_subagents,
     middleware=[
