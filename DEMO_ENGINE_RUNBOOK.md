@@ -87,15 +87,20 @@ capability this agent exists to provide, and it does so quietly.
    git checkout demo/engine-missing-dates
    ```
 
-2. **Seed recurring traces into a fresh, disposable tracing project.** Engine
-   surfaces *recurring* patterns, so generate a batch (≈15–20 runs) over the
-   golden questions. Use a unique project name per demo so Engine re-detects from
-   a clean slate.
+2. **Seed recurring traces against the deployed agent.** Engine surfaces
+   *recurring* patterns, so generate a batch (~a dozen threads) of
+   date-demanding research questions — these force the agent to need the
+   `published_date` that the bug nulls out, so the defect shows up in every
+   trace. The script prompts for the deployment URL (nothing hardcoded) and
+   reads `LANGSMITH_API_KEY` from the environment / `.env`:
    ```bash
-   LANGSMITH_PROJECT="engine-demo-$(date +%Y%m%d-%H%M)" \
-     uv run --env-file .env python evals/seed_demo_traces.py
+   export LANGSMITH_API_KEY=...          # or leave it in .env
+   ./evals/seed_demo_traces.sh           # prompts for the deployment URL
    ```
-   (Seed script reuses the `llm-research-golden` questions; see that file.)
+   Traces land in the **tracing project configured on the deployment**, and each
+   run is tagged `metadata.demo = engine-missing-dates` for easy filtering. For a
+   clean per-demo slate, point the deployment at a fresh `LANGSMITH_PROJECT`
+   before seeding (or just filter by the metadata tag).
 
 3. **Set up Engine on that project.** In LangSmith → Tracing → *(the demo
    project)* → **Engine** tab → connect the repo with subfolder
