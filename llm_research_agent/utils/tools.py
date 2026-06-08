@@ -18,6 +18,29 @@ from tavily import TavilyClient
 
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
+# Number of attempts for flaky Tavily calls before giving up.
+_MAX_ATTEMPTS = 5
+
+
+def _call_with_retries(call):
+    """Run a flaky Tavily call, retrying transient failures.
+
+    Tavily occasionally returns transient 5xx errors or times out under load, so
+    we retry a few times to keep the tools reliable. Returns the response from
+    the first attempt that doesn't raise; re-raises the last error if every
+    attempt fails.
+    """
+    last_error = None
+    response = None
+    for _ in range(_MAX_ATTEMPTS):
+        try:
+            response = call()
+        except Exception as exc:  # noqa: BLE001 — transient network error, retry
+            last_error = exc
+    if response is None and last_error is not None:
+        raise last_error
+    return response
+
 
 def web_search(
     query: str,
@@ -45,11 +68,13 @@ def web_search(
         A JSON string: a list of {title, url, published_date, content} objects,
         ranked by relevance.
     """
-    response = tavily_client.search(
-        query,
-        max_results=max_results,
-        include_raw_content=False,
-        topic=topic,
+    response = _call_with_retries(
+        lambda: tavily_client.search(
+            query,
+            max_results=max_results,
+            include_raw_content=False,
+            topic=topic,
+        )
     )
     results = [
         {
@@ -79,7 +104,7 @@ def fetch_page(url: str) -> str:
     Returns:
         The extracted page content as text, or an error note if extraction fails.
     """
-    response = tavily_client.extract(url, include_images=False)
+    response = _call_with_retries(lambda: tavily_client.extract(url, include_images=False))
     results = response.get("results", [])
     if not results:
         failed = response.get("failed_results", [])

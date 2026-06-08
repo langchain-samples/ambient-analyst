@@ -1,9 +1,11 @@
 """Custom SDK eval for the LLM research agent — results show up in LangSmith.
 
-Three evaluators over the `llm-research-golden` dataset:
-- hallucination_free  (LLM judge)  0-100, higher = fewer/no unsupported specifics
-- correctness         (LLM judge)  0-100, higher = closer to the reference answer
-- memory_updated      (code)       100 if the run wrote to /memory else 0 (continuous learning)
+Three evaluators over the `llm-research-golden` dataset (all on a 0.0-1.0
+continuous scale — LangSmith's default feedback range, and what the `correctness`
+key's tenant feedback config enforces; sending 0-100 here 400s the ingest):
+- hallucination_free  (LLM judge)  0.0-1.0, higher = fewer/no unsupported specifics
+- correctness         (LLM judge)  0.0-1.0, higher = closer to the reference answer
+- memory_updated      (code)       1.0 if the run wrote to /memory else 0.0 (continuous learning)
 
 The agent's real output is the full graph state (`{messages: [...]}`), so the
 target flattens it to a plain `answer` string + the list of /memory writes — which
@@ -78,7 +80,7 @@ def run_agent(inputs: dict) -> dict:
 
 # --- LLM judges ------------------------------------------------------------
 class Grade(BaseModel):
-    score: int = Field(ge=0, le=100, description="Quality score from 0 (worst) to 100 (best) for this criterion.")
+    score: float = Field(ge=0, le=1, description="Quality score from 0.0 (worst) to 1.0 (best) for this criterion.")
     comment: str = Field(description="One-sentence justification that supports the score.")
 
 
@@ -93,14 +95,14 @@ _RUBRICS = {
     "hallucination_free": (
         "Grade the AI answer for HALLUCINATIONS: invented or unsupported specifics "
         "(fake model names, made-up benchmark numbers, dates, prices, or sources), or "
-        "claims that contradict the reference. Score 0-100: 100 = no hallucinations, "
-        "every specific is plausible/supported and uncertainty is flagged; ~50 = a few "
-        "minor unsupported details; 0 = major fabrications or contradicts the reference."
+        "claims that contradict the reference. Score 0.0-1.0: 1.0 = no hallucinations, "
+        "every specific is plausible/supported and uncertainty is flagged; ~0.5 = a few "
+        "minor unsupported details; 0.0 = major fabrications or contradicts the reference."
     ),
     "correctness": (
-        "Grade the AI answer for CORRECTNESS against the reference answer. Score 0-100: "
-        "100 = fully consistent with the reference and covers the question's key points; "
-        "~50 = partially correct or missing key points; 0 = wrong or contradicts the reference."
+        "Grade the AI answer for CORRECTNESS against the reference answer. Score 0.0-1.0: "
+        "1.0 = fully consistent with the reference and covers the question's key points; "
+        "~0.5 = partially correct or missing key points; 0.0 = wrong or contradicts the reference."
     ),
 }
 
@@ -125,7 +127,7 @@ def memory_updated(outputs: dict) -> dict:
     writes = outputs.get("memory_writes") or []
     return {
         "key": "memory_updated",
-        "score": 100 if writes else 0,
+        "score": 1 if writes else 0,
         "comment": f"Wrote to {', '.join(sorted(set(writes)))}" if writes else "No /memory writes this run",
     }
 

@@ -13,8 +13,9 @@ LLM, so they cannot be code evaluators online; configure those as LLM-as-judge
 online evaluators with the `llm-research-hallucination-judge` Prompt Hub prompt.)
 
 It reads the agent root run's output (`{"messages": [...]}`) and flags any
-write_file / edit_file tool call targeting `/memory`. Score 100 = the agent
-persisted a memory/scorecard update this run, 0 = it did not.
+write_file / edit_file tool call targeting `/memory`. Score 1 = the agent
+persisted a memory/scorecard update this run, 0 = it did not. (0.0-1.0 to match
+the offline SDK eval and LangSmith's default continuous feedback range.)
 """
 
 
@@ -29,4 +30,4 @@ def perform_eval(run):
         if isinstance(m, dict)
         for tc in (m.get("tool_calls") or [])
     )
-    return {"memory_updated": 100 if wrote else 0}
+    return {"memory_updated": 1 if wrote else 0}
