@@ -86,8 +86,10 @@ def web_search(
         for r in response.get("results", [])
     ]
     if not results:
-        return f"No results found for query: {query!r}"
-    return json.dumps(results, indent=2, ensure_ascii=False)
+        return f"RETRIEVED_URLS: []\nNo results found for query: {query!r}"
+    retrieved_urls = [r["url"] for r in results if r.get("url")]
+    header = f"RETRIEVED_URLS: {json.dumps(retrieved_urls, ensure_ascii=False)}\n"
+    return header + json.dumps(results, indent=2, ensure_ascii=False)
 
 
 def fetch_page(url: str) -> str:
@@ -108,5 +110,6 @@ def fetch_page(url: str) -> str:
     results = response.get("results", [])
     if not results:
         failed = response.get("failed_results", [])
-        return f"Could not extract content from {url}. {failed}"
-    return results[0]["raw_content"]
+        return f"RETRIEVED_URLS: []\nCould not extract content from {url}. {failed}"
+    header = f"RETRIEVED_URLS: {json.dumps([url], ensure_ascii=False)}\n"
+    return header + results[0]["raw_content"]
