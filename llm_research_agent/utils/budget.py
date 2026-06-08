@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_config
 
 if TYPE_CHECKING:
@@ -83,14 +83,25 @@ class StepBudgetMiddleware(AgentMiddleware):
             forced to be a tool-free final answer. Keep comfortably below the
             graph's `recursion_limit` (≈2 graph steps per turn) so this fires
             before the hard limit.
+        max_graph_steps: Combined `AIMessage` + `ToolMessage` ceiling that also
+            triggers the guard. Counting tool messages approximates true graph
+            steps when a single turn fans out into multiple parallel tool calls,
+            so the guard still fires before `recursion_limit` on heavy fanout.
     """
 
-    def __init__(self, max_model_turns: int = 25) -> None:
+    def __init__(
+        self, max_model_turns: int = 25, max_graph_steps: int = 60
+    ) -> None:
         self.max_model_turns = max_model_turns
+        self.max_graph_steps = max_graph_steps
 
     def _over_budget(self, request: ModelRequest) -> bool:
-        turns = sum(1 for m in request.messages if isinstance(m, AIMessage))
-        return turns >= self.max_model_turns
+        ai_turns = sum(1 for m in request.messages if isinstance(m, AIMessage))
+        tool_msgs = sum(1 for m in request.messages if isinstance(m, ToolMessage))
+        return (
+            ai_turns >= self.max_model_turns
+            or ai_turns + tool_msgs >= self.max_graph_steps
+        )
 
     def _force_final(self, request: ModelRequest) -> ModelRequest:
         # Drop tools so the model can't call any, and append a strong instruction
