@@ -1,15 +1,21 @@
 """Run the LLM research agent evals — one entrypoint, flags pick the type.
 
+Every run records the agent's model in experiment metadata (`agent_model` +
+`agent_provider`), so you can group/compare experiments by model in LangSmith.
+
   # offline eval over the golden dataset, all evaluators (default)
   uv run --env-file .env python evals/run.py
 
   # offline, a subset of evaluators
   uv run --env-file .env python evals/run.py --evaluators correctness conciseness
 
-  # A/B model comparison: same evaluators, one experiment per model arm
-  uv run --env-file .env python evals/run.py --type ab --matchup anthropic-vs-openai
+  # A/B two models you choose independently — one experiment per arm
+  uv run --env-file .env python evals/run.py --type ab \
+      --model-a anthropic:claude-sonnet-4-6 --model-b openai:gpt-5
+  # --model-a defaults to the agent's own model, so the common case is just:
+  uv run --env-file .env python evals/run.py --type ab --model-b openai:gpt-5
 
-  # list available evaluators + matchups and exit
+  # list available evaluators and exit
   uv run --env-file .env python evals/run.py --list
 
 Evaluators live in evals/evaluators/ (one module per metric); shared building
@@ -33,27 +39,18 @@ from langsmith import Client, evaluate
 from evals.evaluators import ALL
 from evals.shared import DATASET, MAX_CONCURRENCY, make_target
 
-# --- A/B matchups (only used by --type ab) ---------------------------------
 GATEWAY = "https://gateway.smith.langchain.com"
 # The gateway is authed by a LangSmith gateway key; ANTHROPIC_API_KEY is already
 # set to that key in this repo's .env, so it's the fallback.
 GATEWAY_KEY = os.environ.get("LANGSMITH_API_KEY_GATEWAY") or os.environ.get("ANTHROPIC_API_KEY")
 
-# Overridable via env so provider renames don't need code changes.
-ANTHROPIC = os.environ.get("AB_ANTHROPIC", "claude-sonnet-4-6")
-OPENAI_EXPENSIVE = os.environ.get("AB_OPENAI_EXPENSIVE", "gpt-5")
-OPENAI_CHEAP = os.environ.get("AB_OPENAI_CHEAP", "gpt-5-mini")
 
-MATCHUPS = {
-    "anthropic-vs-openai": [
-        {"label": "anthropic", "model": ANTHROPIC, "provider": "anthropic"},
-        {"label": "openai", "model": OPENAI_EXPENSIVE, "provider": "openai"},
-    ],
-    "openai-cost": [
-        {"label": "openai-expensive", "model": OPENAI_EXPENSIVE, "provider": "openai"},
-        {"label": "openai-cheap", "model": OPENAI_CHEAP, "provider": "openai"},
-    ],
-}
+def _spec(value: str):
+    """Parse a 'provider:model' CLI arg into (provider, model)."""
+    provider, sep, model = value.partition(":")
+    if not sep or not provider or not model:
+        raise argparse.ArgumentTypeError(f"expected 'provider:model', got {value!r}")
+    return provider, model
 
 
 def _evaluators(names):
@@ -67,40 +64,44 @@ def _gateway_chat(model: str, provider: str):
     )
 
 
-def run_offline(names) -> None:
-    from llm_research_agent.agent import agent
-
+def _evaluate_arm(target, names, experiment_prefix: str, model: str, provider: str, eval_type: str) -> str:
+    """Run one evaluate() over the dataset, ALWAYS tagging the agent model in metadata."""
     results = evaluate(
-        make_target(agent),
+        target,
         data=DATASET,
         evaluators=_evaluators(names),
-        experiment_prefix="llm-research-offline",
+        experiment_prefix=experiment_prefix,
+        metadata={"agent_model": model, "agent_provider": provider, "eval_type": eval_type},
         max_concurrency=MAX_CONCURRENCY,
     )
-    print(getattr(results, "experiment_name", results))
+    return getattr(results, "experiment_name", str(results))
 
 
-def run_ab(matchup: str, names) -> None:
+def run_offline(names) -> None:
+    from llm_research_agent.agent import DEFAULT_MODEL, DEFAULT_PROVIDER, agent
+
+    exp = _evaluate_arm(
+        make_target(agent), names, "llm-research-offline",
+        model=DEFAULT_MODEL, provider=DEFAULT_PROVIDER, eval_type="offline",
+    )
+    print(exp)
+
+
+def run_ab(model_a, model_b, names) -> None:
     from llm_research_agent.agent import build_agent
 
-    arms = MATCHUPS[matchup]
     client = Client()
     ds = client.read_dataset(dataset_name=DATASET)
-    print(f"\n=== matchup '{matchup}' over '{DATASET}' ({ds.id}) ===")
+    print(f"\n=== A/B over '{DATASET}' ({ds.id}) ===")
 
     session_ids = []
-    for arm in arms:
-        target = make_target(build_agent(_gateway_chat(arm["model"], arm["provider"])))
-        print(f"\n--- arm '{arm['label']}': {arm['provider']}:{arm['model']} ---")
-        results = evaluate(
-            target,
-            data=DATASET,
-            evaluators=_evaluators(names),
-            experiment_prefix=f"ab-{matchup}-{arm['label']}",
-            metadata={"matchup": matchup, "provider": arm["provider"], "model": arm["model"]},
-            max_concurrency=MAX_CONCURRENCY,
+    for provider, model in (model_a, model_b):
+        target = make_target(build_agent(_gateway_chat(model, provider)))
+        print(f"\n--- arm {provider}:{model} ---")
+        exp = _evaluate_arm(
+            target, names, f"ab-{provider}-{model}",
+            model=model, provider=provider, eval_type="ab",
         )
-        exp = getattr(results, "experiment_name", str(results))
         print(f"    experiment: {exp}")
         try:
             session_ids.append(str(client.read_project(project_name=exp).id))
@@ -108,11 +109,11 @@ def run_ab(matchup: str, names) -> None:
             print(f"    (couldn't resolve session id for compare URL: {e})")
 
     print("\nCompare arms in the LangSmith UI:")
-    if len(session_ids) == len(arms):
+    if len(session_ids) == 2:
         sel = "".join(f"&selectedSessions={s}" for s in session_ids)
         print(f"  https://smith.langchain.com/datasets/{ds.id}/compare?{sel.lstrip('&')}")
     else:
-        print(f"  Open dataset {ds.id} -> Experiments tab, select the 'ab-{matchup}-*' runs.")
+        print(f"  Open dataset {ds.id} -> Experiments tab, select the 'ab-*' runs.")
 
 
 def main() -> None:
@@ -124,19 +125,30 @@ def main() -> None:
         "--evaluators", nargs="*", choices=list(ALL), metavar="NAME",
         help=f"subset to run (default: all). Choices: {', '.join(ALL)}",
     )
-    p.add_argument("--matchup", choices=list(MATCHUPS), help="A/B matchup (required for --type ab)")
-    p.add_argument("--list", action="store_true", help="list evaluators + matchups and exit")
+    p.add_argument(
+        "--model-a", type=_spec, default=None, metavar="PROVIDER:MODEL",
+        help="first A/B arm (default: the agent's own model)",
+    )
+    p.add_argument(
+        "--model-b", type=_spec, default=None, metavar="PROVIDER:MODEL",
+        help="second A/B arm (required for --type ab)",
+    )
+    p.add_argument("--list", action="store_true", help="list evaluators and exit")
     args = p.parse_args()
 
     if args.list:
         print("evaluators:", ", ".join(ALL))
-        print("matchups:  ", ", ".join(MATCHUPS))
         return
 
     if args.type == "ab":
-        if not args.matchup:
-            p.error("--type ab requires --matchup (one of: " + ", ".join(MATCHUPS) + ")")
-        run_ab(args.matchup, args.evaluators)
+        if args.model_b is None:
+            p.error("--type ab requires --model-b PROVIDER:MODEL (--model-a defaults to the agent's model)")
+        model_a = args.model_a
+        if model_a is None:
+            from llm_research_agent.agent import DEFAULT_MODEL, DEFAULT_PROVIDER
+
+            model_a = (DEFAULT_PROVIDER, DEFAULT_MODEL)
+        run_ab(model_a, args.model_b, args.evaluators)
     else:
         run_offline(args.evaluators)
 

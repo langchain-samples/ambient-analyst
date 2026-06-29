@@ -91,9 +91,14 @@ for handle in SKILL_HANDLES:
     skill_md.write_text(client.pull_skill(handle).files["SKILL.md"].content)
 skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 
+# Default agent model — exported so the eval suite can record it in experiment
+# metadata (single source of truth for the "what model ran" tag).
+DEFAULT_PROVIDER = "anthropic"
+DEFAULT_MODEL = "claude-sonnet-4-6"
+
 model = init_chat_model(
-    model="claude-sonnet-4-6",
-    model_provider="anthropic",
+    model=DEFAULT_MODEL,
+    model_provider=DEFAULT_PROVIDER,
     base_url="https://gateway.smith.langchain.com/anthropic",
 )
 
