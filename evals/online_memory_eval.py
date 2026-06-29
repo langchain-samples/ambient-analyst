@@ -14,8 +14,8 @@ online evaluators with the `llm-research-hallucination-judge` Prompt Hub prompt.
 
 It reads the agent root run's output (`{"messages": [...]}`) and flags any
 write_file / edit_file tool call targeting `/memory`. Score 1 = the agent
-persisted a memory/scorecard update this run, 0 = it did not. (0.0-1.0 to match
-the offline SDK eval and LangSmith's default continuous feedback range.)
+persisted a memory/scorecard update this run, 0 = it did not. (Binary 0/1, matching
+the offline SDK eval and within LangSmith's default 0.0-1.0 feedback range.)
 """
 
 

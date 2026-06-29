@@ -146,16 +146,27 @@ async_subagents = [
     ),
 ]
 
-agent = create_deep_agent(
-    model=model,
-    tools=[web_search, fetch_page],
-    system_prompt=system_prompt,
-    backend=backend,
-    skills=["/skills/"],
-    memory=MEMORY_SOURCES,
-    subagents=async_subagents,
-    middleware=[
-        RecursionFloorMiddleware(minimum=25),
-        StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
-    ],
-).with_config({"recursion_limit": RECURSION_LIMIT})
+def build_agent(chat_model=None):
+    """Build the research agent, optionally swapping the chat model.
+
+    Everything else (prompt, skills, memory, tools, subagents) is shared module
+    state, so the only thing that varies is the model — which is exactly what the
+    A/B model eval (evals/run.py --type ab) needs. `chat_model=None` uses the default.
+    """
+    return create_deep_agent(
+        model=chat_model or model,
+        tools=[web_search, fetch_page],
+        system_prompt=system_prompt,
+        backend=backend,
+        skills=["/skills/"],
+        memory=MEMORY_SOURCES,
+        subagents=async_subagents,
+        middleware=[
+            RecursionFloorMiddleware(minimum=25),
+            StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
+        ],
+    ).with_config({"recursion_limit": RECURSION_LIMIT})
+
+
+# Default singleton — what langgraph.json deploys and the offline eval imports.
+agent = build_agent()

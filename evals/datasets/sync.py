@@ -1,28 +1,32 @@
-"""Pull the `llm-research-golden` dataset from LangSmith (the source of truth).
+"""Pull the golden dataset from LangSmith (the source of truth) into a snapshot.
 
 The dataset lives on LangSmith and is the canonical benchmark: its questions
 (inputs) and reference answers (outputs) are maintained there, not hardcoded here.
-Reference outputs are the agent's own vetted answers, so evals/run_eval.py grades
-future changes against today's behavior.
+Reference outputs are the agent's own vetted answers, so the eval suite
+(evals/run.py) grades future changes against today's behavior.
 
 This script reads the live examples and writes a git-trackable snapshot
-(evals/golden_snapshot.json) so dataset drift shows up in a diff.
+(golden_snapshot.jsonl, one example per line, next to this file) so dataset drift
+shows up in a diff.
 
-Schema (matches what evals/run_eval.py reads):
+Schema (matches what evals/shared.py reads):
 - inputs            : {"messages": [{"role": "user", "content": <question>}]}
 - reference outputs : {"messages": [{"type": "ai", "content": <reference answer>}]}
 
-Run:  uv run --env-file .env python evals/golden_dataset.py
+Run:  uv run --env-file .env python evals/datasets/sync.py
 """
 
 import json
-import os
 import pathlib
+import sys
 
 from langsmith import Client
 
-DATASET = os.environ.get("EVAL_DATASET", "llm-research-golden")
-SNAPSHOT = pathlib.Path(__file__).resolve().parent / "golden_snapshot.json"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
+from evals.shared import DATASET  # single source of truth for the dataset name
+
+SNAPSHOT = pathlib.Path(__file__).resolve().parent / "golden_snapshot.jsonl"
 
 
 def _question(inputs: dict) -> str:
@@ -44,7 +48,9 @@ def main() -> None:
         {"id": str(e.id), "inputs": e.inputs, "outputs": e.outputs}
         for e in examples
     ]
-    SNAPSHOT.write_text(json.dumps(snapshot, indent=2, sort_keys=True, default=str))
+    SNAPSHOT.write_text(
+        "".join(json.dumps(rec, sort_keys=True, default=str) + "\n" for rec in snapshot)
+    )
 
     print(f"Pulled {len(snapshot)} examples from '{DATASET}' ({ds.id}).")
     for e in examples:
