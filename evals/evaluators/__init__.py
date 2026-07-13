@@ -11,6 +11,7 @@ to `_MODULES` below. `evals/run.py` discovers everything through `ALL`.
 """
 
 from evals.evaluators import (
+    assertions,
     conciseness,
     correctness,
     hallucination,
@@ -18,7 +19,7 @@ from evals.evaluators import (
     memory,
 )
 
-_MODULES = (correctness, hallucination, conciseness, helpfulness, memory)
+_MODULES = (correctness, hallucination, conciseness, helpfulness, memory, assertions)
 
 # name -> zero-arg builder. Call the builder to get a ready evaluator.
 ALL = {m.NAME: m.build for m in _MODULES}

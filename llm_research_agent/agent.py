@@ -36,17 +36,24 @@ from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from langchain.chat_models import init_chat_model
+from langchain_core.runnables import RunnableConfig
 from langsmith import Client
 from langsmith.sandbox import SandboxClient
 
+from llm_research_agent.utils.assistants import DEFAULT_SYSTEM_PROMPT, assistant_settings
 from llm_research_agent.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from llm_research_agent.utils.pii import PIIRedactionMiddleware
 from llm_research_agent.utils.tools import fetch_page, web_search
+
+import dotenv
+import os
+
+dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 # LangSmith resources (override via env to target staging vs production).
 MEMORY_REPO = os.environ.get("LLM_RESEARCH_MEMORY_REPO", "llm-research-memory")
-PROMPT_NAME = os.environ.get("LLM_RESEARCH_PROMPT_NAME", "llm-research-prompt")
 # Each skill is its own Context Hub skill repo; handle == skill (and directory) name.
 SKILL_HANDLES = [
     h.strip()
@@ -73,11 +80,9 @@ MAX_MODEL_TURNS = 25
 
 client = Client()
 
-# System prompt: `llm-research-prompt` is a ChatPromptTemplate (system +
-# `{question}` human message); the agent brings its own conversation, so we take
-# only the system message's text.
-prompt = client.pull_prompt(PROMPT_NAME)
-system_prompt = prompt.messages[0].prompt.template
+# The system prompt and tool selection come from the assistant's config (see
+# utils/assistants.py); `build_agent` takes them as arguments and the `make_agent`
+# factory resolves them per run. Defaults reproduce the pre-configuration agent.
 
 # Skills: deepagents has no native "mount N skill repos" backend, so we pull each
 # repo's SKILL.md into a temp dir as <name>/SKILL.md and root a FilesystemBackend
@@ -93,13 +98,14 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 
 # Default agent model — exported so the eval suite can record it in experiment
 # metadata (single source of truth for the "what model ran" tag).
-DEFAULT_PROVIDER = "anthropic"
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_PROVIDER = "openai"
+DEFAULT_MODEL = "gpt-5.5-2026-04-23"
 
 model = init_chat_model(
     model=DEFAULT_MODEL,
     model_provider=DEFAULT_PROVIDER,
-    base_url="https://gateway.smith.langchain.com/anthropic",
+    base_url="https://gateway.smith.langchain.com/openai",
+    api_key=os.getenv('LANGSMITH_API_KEY_GATEWAY')
 )
 
 # Mount the shared workspace at /shared/, backed by the sandbox the `coder`
@@ -151,27 +157,36 @@ async_subagents = [
     ),
 ]
 
-def build_agent(chat_model=None):
-    """Build the research agent, optionally swapping the chat model.
+def build_agent(chat_model=None, system_prompt=None, tools=None):
+    """Build the research agent.
 
-    Everything else (prompt, skills, memory, tools, subagents) is shared module
-    state, so the only thing that varies is the model — which is exactly what the
-    A/B model eval (evals/run.py --type ab) needs. `chat_model=None` uses the default.
+    `chat_model`/`system_prompt`/`tools` default to the standard model, the Hub
+    prompt, and both research tools — reproducing the pre-configuration agent
+    (used by the offline eval and the A/B model eval, which only swaps the model).
+    Skills, memory, and subagents are shared module state.
     """
     return create_deep_agent(
         model=chat_model or model,
-        tools=[web_search, fetch_page],
-        system_prompt=system_prompt,
+        tools=[web_search, fetch_page] if tools is None else tools,
+        system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
         backend=backend,
         skills=["/skills/"],
         memory=MEMORY_SOURCES,
         subagents=async_subagents,
         middleware=[
+            PIIRedactionMiddleware(),
             RecursionFloorMiddleware(minimum=25),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
         ],
     ).with_config({"recursion_limit": RECURSION_LIMIT})
 
 
-# Default singleton — what langgraph.json deploys and the offline eval imports.
+def make_agent(config: RunnableConfig):
+    """Graph factory: build the agent from the assistant's config (prompt + tools)."""
+    system_prompt, tools = assistant_settings(config)
+    return build_agent(system_prompt=system_prompt, tools=tools)
+
+
+# Default compiled instance — imported by the offline eval. `make_agent` is what
+# langgraph.json deploys (rebuilt per run from each assistant's config).
 agent = build_agent()

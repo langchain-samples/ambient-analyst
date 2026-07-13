@@ -1,7 +1,8 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "llm_research_agent": "./llm_research_agent/agent.py:agent"
+    "llm_research_agent": "./llm_research_agent/agent.py:make_agent",
+    "simple_research_agent": "./llm_research_agent/simple_agent.py:make_agent"
   },
   "env": "./.env"
 }
