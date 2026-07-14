@@ -15,6 +15,12 @@ Every run records the agent's model in experiment metadata (`agent_model` +
   # --model-a defaults to the agent's own model, so the common case is just:
   uv run --env-file .env python evals/run.py --type ab --model-b openai:gpt-5
 
+  # Every assistant on a deployment — discover all assistants at an endpoint and
+  # run the evals against each (one experiment per assistant, tagged by identity).
+  uv run --env-file .env python evals/run.py --type assistants \
+      --endpoint https://my-deployment.us.langgraph.app
+  # --endpoint defaults to $LANGGRAPH_DEPLOYMENT_URL; --graph-id filters to one graph.
+
   # list available evaluators and exit
   uv run --env-file .env python evals/run.py --list
 
@@ -64,14 +70,24 @@ def _gateway_chat(model: str, provider: str):
     )
 
 
-def _evaluate_arm(target, names, experiment_prefix: str, model: str, provider: str, eval_type: str) -> str:
-    """Run one evaluate() over the dataset, ALWAYS tagging the agent model in metadata."""
+def _evaluate_arm(
+    target, names, experiment_prefix: str, *, eval_type: str,
+    model: str | None = None, provider: str | None = None, extra: dict | None = None,
+) -> str:
+    """Run one evaluate() over the dataset, always tagging eval_type and — when
+    known — the agent model plus any `extra` metadata (e.g. the assistant identity
+    for remote assistants, whose model is fixed by the deployment, not chosen here)."""
+    metadata = {"eval_type": eval_type, **(extra or {})}
+    if model is not None:
+        metadata["agent_model"] = model
+    if provider is not None:
+        metadata["agent_provider"] = provider
     results = evaluate(
         target,
         data=DATASET,
         evaluators=_evaluators(names),
         experiment_prefix=experiment_prefix,
-        metadata={"agent_model": model, "agent_provider": provider, "eval_type": eval_type},
+        metadata=metadata,
         max_concurrency=MAX_CONCURRENCY,
     )
     return getattr(results, "experiment_name", str(results))
@@ -116,11 +132,47 @@ def run_ab(model_a, model_b, names) -> None:
         print(f"  Open dataset {ds.id} -> Experiments tab, select the 'ab-*' runs.")
 
 
+def run_assistants(endpoint: str, names, graph_id: str | None = None) -> None:
+    """Discover every assistant on `endpoint` and eval each one against the dataset.
+
+    Each assistant is a saved config (prompt + tools) of a deployed graph; we bind a
+    RemoteGraph to its assistant_id and run the full evaluator suite over it, so the
+    ACTUAL deployed configuration is what's scored (not a locally rebuilt copy)."""
+    from langgraph.pregel.remote import RemoteGraph
+    from langgraph_sdk import get_client, get_sync_client
+
+    client, sync_client = get_client(url=endpoint), get_sync_client(url=endpoint)
+
+    assistants, offset = [], 0
+    while True:
+        page = sync_client.assistants.search(graph_id=graph_id, limit=100, offset=offset)
+        assistants.extend(page)
+        if len(page) < 100:
+            break
+        offset += 100
+
+    scope = f" for graph {graph_id!r}" if graph_id else ""
+    if not assistants:
+        print(f"No assistants found at {endpoint}{scope}.")
+        return
+
+    print(f"\n=== evals over {len(assistants)} assistant(s) at {endpoint}{scope} ===")
+    for a in assistants:
+        aid, name = a["assistant_id"], a.get("name") or a["assistant_id"]
+        print(f"\n--- assistant {name} ({aid}, graph={a.get('graph_id')}) ---")
+        exp = _evaluate_arm(
+            make_target(RemoteGraph(aid, client=client, sync_client=sync_client)),
+            names, f"assistants-{name}", eval_type="assistants",
+            extra={"assistant_id": aid, "assistant_name": name, "graph_id": a.get("graph_id")},
+        )
+        print(f"    experiment: {exp}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--type", choices=["offline", "ab"], default="offline", help="eval type (default: offline)")
+    p.add_argument("--type", choices=["offline", "ab", "assistants"], default="offline", help="eval type (default: offline)")
     p.add_argument(
         "--evaluators", nargs="*", choices=list(ALL), metavar="NAME",
         help=f"subset to run (default: all). Choices: {', '.join(ALL)}",
@@ -133,6 +185,11 @@ def main() -> None:
         "--model-b", type=_spec, default=None, metavar="PROVIDER:MODEL",
         help="second A/B arm (required for --type ab)",
     )
+    p.add_argument(
+        "--endpoint", default=os.environ.get("LANGGRAPH_DEPLOYMENT_URL"), metavar="URL",
+        help="deployment URL for --type assistants (default: $LANGGRAPH_DEPLOYMENT_URL)",
+    )
+    p.add_argument("--graph-id", default=None, metavar="ID", help="filter assistants to one graph (--type assistants)")
     p.add_argument("--list", action="store_true", help="list evaluators and exit")
     args = p.parse_args()
 
@@ -149,6 +206,10 @@ def main() -> None:
 
             model_a = (DEFAULT_PROVIDER, DEFAULT_MODEL)
         run_ab(model_a, args.model_b, args.evaluators)
+    elif args.type == "assistants":
+        if not args.endpoint:
+            p.error("--type assistants requires --endpoint URL (or set $LANGGRAPH_DEPLOYMENT_URL)")
+        run_assistants(args.endpoint, args.evaluators, args.graph_id)
     else:
         run_offline(args.evaluators)
 
