@@ -16,7 +16,7 @@ concurrency:
 env:
   # Name of the LangSmith deployment to find-or-update.
   # Matches the default `langgraph deploy` uses locally (the project dir name).
-  DEPLOYMENT_NAME: llm-research
+  DEPLOYMENT_NAME: ambient-analyst
 
 jobs:
   deploy:
@@ -37,18 +37,17 @@ jobs:
       # avoid log leakage and shell-injection.
       - name: Write .env from secrets
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          LANGSMITH_API_KEY_GATEWAY: ${{ secrets.LANGSMITH_API_KEY_GATEWAY }}
+          LC_GATEWAY_KEY: ${{ secrets.LC_GATEWAY_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
         run: |
           cat > .env <<EOF
           ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-          LANGSMITH_API_KEY_GATEWAY=${LANGSMITH_API_KEY_GATEWAY}
+          LC_GATEWAY_KEY=${LC_GATEWAY_KEY}
           TAVILY_API_KEY=${TAVILY_API_KEY}
           LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
           LANGSMITH_TRACING=true
-          LANGSMITH_PROJECT=llm-research
+          LANGSMITH_PROJECT=ambient-analyst
           EOF
 
       # Remote build: LangSmith builds the image from langgraph.json — no Docker

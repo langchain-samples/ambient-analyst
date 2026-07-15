@@ -7,8 +7,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Deep Agents Capability Visualizer",
-  description: "Watch the LLM research deep agent run on the LangSmith agent server.",
+  title: "Ambient Analyst",
+  description: "Watch Ambient Analyst run dynamic analysis on the LangSmith agent server.",
 };
 
 export default function RootLayout({

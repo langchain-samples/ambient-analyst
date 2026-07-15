@@ -6,4 +6,4 @@ export const API_URL =
   process.env.NEXT_PUBLIC_LANGGRAPH_API_URL ?? "/api/lg";
 
 export const ASSISTANT_ID =
-  process.env.NEXT_PUBLIC_LANGGRAPH_ASSISTANT_ID ?? "llm_research_agent";
+  process.env.NEXT_PUBLIC_LANGGRAPH_ASSISTANT_ID ?? "ambient-analyst";

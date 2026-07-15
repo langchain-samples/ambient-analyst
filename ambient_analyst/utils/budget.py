@@ -1,6 +1,6 @@
 """Step-budget middleware: land a clean final answer instead of looping forever.
 
-The research agent can fail to converge — it keeps searching to nail down exact,
+The analyst can fail to converge — it keeps searching to nail down exact,
 fast-moving figures and never settles into a final answer (we diagnosed a run
 that did 38 model turns / 58 web calls before being interrupted). Two guards
 address that:

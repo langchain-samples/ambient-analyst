@@ -1,6 +1,6 @@
-# LLM Research Agent
+# Ambient Analyst
 
-A research analyst for the **large language model landscape**, built on the
+Ambient Analyst is a macroeconomic and business analyst built on the
 [LangChain **DeepAgents**](https://docs.langchain.com/oss/python/deepagents/overview)
 framework and packaged as a
 [LangGraph application](https://docs.langchain.com/oss/python/langgraph/application-structure)
@@ -8,34 +8,34 @@ framework and packaged as a
 
 Ask it things like:
 
-- "Which model is best for coding / reasoning / long-context / agents right now?"
-- "What are the most important benchmarks — and can I trust them?"
-- "Who are the major players, and what did they ship recently?"
-- "How does model A compare to model B?"
+- "What macro forces will shape enterprise software spending this year?"
+- "Compare the growth drivers and risks for these three companies."
+- "How could rates, inflation, and regulation change this industry's outlook?"
+- "Which LLM is best for this workload, and can I trust the benchmarks?"
 
-It answers with **sourced, dated** analysis, is **skeptical of benchmark claims**,
-and keeps a long-term **scorecard** of the best models that improves every time
-it runs.
+It produces **sourced, dated** analysis, separates evidence from inference,
+tests scenarios and counterarguments, and states confidence and decision
+implications. LLM research and model evaluation remain a specialist capability.
 
 ## How it works
 
-- **Tools** — Tavily `web_search` (multi-result, with URLs + dates) and
-  `fetch_page` (full-page extraction) for sourced research.
-- **Skills** — five research playbooks loaded on demand via progressive
+- **Tools** — `tavily_search` for current web research and `tavily_extract` for
+  source extraction, both from `langchain-tavily` and configurable per assistant.
+- **Skills** — specialist LLM research playbooks loaded on demand via progressive
   disclosure, each stored as its own **LangSmith Context Hub skill repo**
   (`pull_skill`), pulled at startup:
-  - `model-evaluation` — how to research and compare current models.
-  - `benchmark-analysis` — the major benchmarks and how to judge their validity
+  - `ambient-analyst-model-evaluation` — how to research and compare current models.
+  - `ambient-analyst-benchmark-analysis` — the major benchmarks and how to judge their validity
     (contamination, saturation, self-reported vs independent, construct validity).
-  - `landscape-mapping` — the major labs/model families and tracking releases.
-  - `scorecard-maintenance` — the scorecard schema and how to update it safely.
-  - `continuous-learning` — what to capture after each task so the agent improves.
+  - `ambient-analyst-landscape-mapping` — the major labs/model families and tracking releases.
+  - `ambient-analyst-scorecard-maintenance` — the scorecard schema and how to update it safely.
+  - `ambient-analyst-continuous-learning` — what to capture after each task so the agent improves.
 - **Long-term memory** — `AGENTS.md` (standing context + learnings) and
   `scorecard.md` (ranked best-models-per-category, with scores, sources, dates,
-  and caveats), in the Context Hub agent repo `llm-research-memory`. Loaded into
+  and caveats), in the Context Hub agent repo `ambient-analyst-memory`. Loaded into
   context every run.
 - **System prompt** — pulled from the **LangSmith Prompt Hub** prompt
-  `llm-research-prompt` at startup (its system message), not hard-coded.
+  `ambient-analyst-prompt` at startup (its system message), not hard-coded.
 - **Continuous learning** — the agent updates memory and the scorecard with its
   own `write_file`/`edit_file` tools, which commit straight back to the Context
   Hub. Knowledge compounds across sessions instead of restarting each time.
@@ -51,12 +51,12 @@ it runs.
 This repo holds **only the agent code** — skills, memory, and the system prompt
 all live in LangSmith (the single source of truth), so there are no local copies
 to drift out of date. At construction the agent pulls the **Prompt Hub** prompt
-`llm-research-prompt` (system message) and each **skill repo** (`pull_skill`),
+`ambient-analyst-prompt` (system message) and each **skill repo** (`pull_skill`),
 staging the skills locally so a `CompositeBackend` can serve them:
 
 ```
 /skills/   ─▶ FilesystemBackend(temp dir, virtual_mode=True)  # skill repos pulled at startup (progressive disclosure)
-/memory/   ─▶ ContextHubBackend("llm-research-memory")        # AGENTS.md + scorecard.md (agent-written, persistent)
+/memory/   ─▶ ContextHubBackend("ambient-analyst-memory")        # AGENTS.md + scorecard.md (agent-written, persistent)
 everything else ─▶ StateBackend()                             # ephemeral scratch (todos, working notes)
 ```
 
@@ -67,37 +67,31 @@ live in (then it resolves its own tenant — no `LANGSMITH_WORKSPACE_ID` needed)
 
 ## Deep agent capabilities
 
-Beyond research, the agent exercises the full DeepAgents toolkit — these are what
+The agent exercises the full DeepAgents toolkit — these are what
 the [frontend visualizer](#frontend-capability-visualizer) is built to show off:
 
-- **Async subagents** — delegates code deliverables to a separately-deployed
-  `code-gen-agent` (an `AsyncSubAgent` pointing at another LangGraph deployment)
-  that runs concurrently over the Agent Protocol.
 - **Dynamic subagents** — with `CodeInterpreterMiddleware` (`langchain-quickjs`),
   phrasing a request as a **"workflow"** lets the agent dispatch subagents from
   interpreter code (loops, parallel fan-out) rather than one tool call at a time.
-  `source-analyst` is the built-in worker.
+  `macro-analysis-worker` can analyze sources, companies, industries, countries,
+  indicators, or scenarios in parallel.
 - **Middleware** — a custom stack (PII redaction, a recursion floor, and a step
   budget that forces a clean final answer near the turn limit) plus the built-in
   planning (todos) and code-interpreter middleware.
-- **Human-in-the-loop** — `interrupt_on={"fetch_page": True}` pauses the run for
-  approval before fetching a page; the served graph's checkpointer persists the
-  interrupt. Approve / reject / edit from the UI.
-- **Sandbox** — a LangSmith managed sandbox mounted at `/shared/` (via
-  `CompositeBackend`), shared with the `code-gen-agent` for file handoffs.
+- **Sandbox** — a LangSmith managed sandbox mounted at `/analysis/` (via
+  `CompositeBackend`) for calculations, datasets, charts, and artifacts.
 
-HITL and dynamic subagents are enabled on the **served** graph (`make_agent`), so
-the offline eval — which has no checkpointer — is unaffected.
+Dynamic subagents are enabled on the served graph (`make_agent`).
 
 ## Project layout
 
 ```
-llm-research/
-├── llm_research_agent/
-│   ├── agent.py              # deep agent: subagents, HITL, sandbox, middleware; pulls the prompt from the Hub
+ambient-analyst/
+├── ambient_analyst/
+│   ├── agent.py              # deep agent: subagents, sandbox, middleware; pulls the prompt from the Hub
 │   ├── simple_agent.py       # a plain ReAct comparison graph
 │   └── utils/
-│       ├── tools.py          # Tavily web_search + fetch_page
+│       ├── assistants.py     # prompt + Tavily tool registry for assistant configs
 │       ├── pii.py            # PII redaction middleware
 │       └── budget.py         # recursion-floor + step-budget middleware
 ├── frontend/                 # Next.js capability visualizer (see below)
@@ -121,13 +115,13 @@ uv sync
 cp .env.example .env   # then fill in your keys
 ```
 
-You need `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, and `LANGSMITH_API_KEY`. Leaving
+You need `TAVILY_API_KEY`, `LC_GATEWAY_KEY` and `LANGSMITH_API_KEY`. Leaving
 `LANGSMITH_TRACING=true` sends traces to LangSmith. **Use a `LANGSMITH_API_KEY`
 scoped to the workspace** that holds the prompt/skill/memory repos — it then
 resolves its own tenant and needs no `LANGSMITH_WORKSPACE_ID`. (An
 org/multi-workspace key resolves no tenant and 404s on the repos; set
 `LANGSMITH_WORKSPACE_ID` for those.) Resource names are overridable via
-`LLM_RESEARCH_PROMPT_NAME`, `LLM_RESEARCH_MEMORY_REPO`, and `LLM_RESEARCH_SKILLS`.
+`AMBIENT_ANALYST_PROMPT_NAME`, `AMBIENT_ANALYST_MEMORY_REPO`, and `AMBIENT_ANALYST_SKILLS`.
 
 ## 3. Run
 
@@ -135,7 +129,7 @@ org/multi-workspace key resolves no tenant and 404s on the repos; set
 uv run langgraph dev
 ```
 
-This serves the `llm_research_agent` graph from `langgraph.json` in LangGraph
+This serves the `ambient-analyst` graph from `langgraph.json` in LangGraph
 Studio. The system prompt, skills, and memory are read directly from LangSmith —
 no per-invocation seeding needed.
 
@@ -145,7 +139,7 @@ no per-invocation seeding needed.
 [capabilities above](#deep-agent-capabilities) visible — one panel each: a chat
 with live tool calls, a **Plan** panel (todos), live **Subagent** cards, an
 **Artifacts** panel (files the agent and sandbox produce), a **Middleware**
-panel, and an inline **approval card** for human-in-the-loop. Capability chips in
+panel. Capability chips in
 the header light up as each feature activates. Built on
 [`@langchain/react`](https://docs.langchain.com/oss/python/deepagents/frontend/overview)'s
 `useStream`.
@@ -165,8 +159,8 @@ pnpm install
 pnpm dev                             # http://localhost:3000
 ```
 
-Demo prompts are one-click buttons (**Research**, **Run a workflow**, **Generate
-code**); any `fetch_page` call triggers the approval card.
+Demo prompts are one-click buttons (**Macro outlook**, **Run a workflow**,
+**Analyze data**); Tavily tool calls show up in the live tool-call UI.
 
 To point at the **LangSmith deployment** instead of the local server, set in
 `frontend/.env.local`:
@@ -185,13 +179,13 @@ agent, not the frontend.
 All of the agent's editable content lives in LangSmith (the source of truth —
 there are no local copies in this repo):
 
-- **System prompt** — Prompt Hub prompt `llm-research-prompt` (its system
+- **System prompt** — Prompt Hub prompt `ambient-analyst-prompt` (its system
   message): edit in the LangSmith UI; pulled fresh each time the graph is built.
-- **Skills** — one Context Hub **skill repo** per skill (`model-evaluation`,
-  `benchmark-analysis`, `landscape-mapping`, `scorecard-maintenance`,
-  `continuous-learning`), each with a `SKILL.md`: edit in the UI to refine a
+- **Skills** — one Context Hub **skill repo** per skill (`ambient-analyst-model-evaluation`,
+  `ambient-analyst-benchmark-analysis`, `ambient-analyst-landscape-mapping`, `ambient-analyst-scorecard-maintenance`,
+  `ambient-analyst-continuous-learning`), each with a `SKILL.md`: edit in the UI to refine a
   playbook; pulled at startup.
-- **Memory + scorecard** — Context Hub agent repo `llm-research-memory`
+- **Memory + scorecard** — Context Hub agent repo `ambient-analyst-memory`
   (`AGENTS.md` + `scorecard.md`): primarily owned by the agent — it writes back
   as it learns. Editable in the UI to correct or reset.
 

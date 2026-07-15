@@ -1,4 +1,4 @@
-"""A simple, configurable research agent — the deployment's second graph.
+"""A simple, configurable Ambient Analyst — the deployment's second graph.
 
 A graph factory: the deployment calls `make_agent` per run with the assistant's
 config and builds a minimal LangGraph ReAct agent with the selected system
@@ -12,13 +12,13 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.runnables import RunnableConfig
 
-from llm_research_agent.utils.assistants import assistant_settings
-from llm_research_agent.utils.pii import PIIRedactionMiddleware
+from ambient_analyst.utils.assistants import assistant_settings
+from ambient_analyst.utils.pii import PIIRedactionMiddleware
 
 # ponytail: same gateway model init as agent.py, duplicated on purpose so
 # importing this graph doesn't pull agent.py's skills or connect its sandbox.
 model = init_chat_model(
-    model=os.environ.get("LLM_RESEARCH_MODEL", "claude-sonnet-4-6"),
+    model=os.environ.get("AMBIENT_ANALYST_MODEL", "claude-sonnet-4-6"),
     model_provider="anthropic",
     base_url="https://gateway.smith.langchain.com/anthropic",
 )

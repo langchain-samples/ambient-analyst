@@ -1,4 +1,4 @@
-"""Eval suite for the LLM research agent.
+"""Eval suite for the agent.
 
 Layout:
 - run.py            single entrypoint; flags pick the eval type (--type, --evaluators)
@@ -9,5 +9,5 @@ Layout:
 
 Package marker so the entrypoints can share `evals.shared` / `evals.evaluators`.
 Not shipped in the wheel — pyproject's package `include` filter keeps the deploy
-build scoped to `llm_research_agent*`.
+build scoped to `ambient_analyst*`.
 """

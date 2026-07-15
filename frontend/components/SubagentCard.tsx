@@ -1,7 +1,7 @@
 "use client";
 
 import { useMessages } from "@langchain/react";
-import { useResearch, msgText, type Subagent } from "@/lib/stream";
+import { useAmbientSpecialist, msgText, type Subagent } from "@/lib/stream";
 
 const STATUS = {
   running: { dot: "bg-amber-400 animate-pulse", label: "running" },
@@ -10,7 +10,7 @@ const STATUS = {
 } as const;
 
 export function SubagentCard({ subagent }: { subagent: Subagent }) {
-  const stream = useResearch();
+  const stream = useAmbientSpecialist();
   // Mount = subscribe to this subagent's namespaced message stream.
   const messages = useMessages(stream, subagent);
   const last = [...messages].reverse().find((m) => msgText(m).trim());

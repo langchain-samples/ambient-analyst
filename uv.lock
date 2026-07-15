@@ -127,6 +127,33 @@ wheels = [
 ]
 
 [[package]]
+name = "ambient-analyst"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "deepagents" },
+    { name = "langchain" },
+    { name = "langchain-mcp-adapters" },
+    { name = "langchain-quickjs" },
+    { name = "langchain-tavily" },
+    { name = "langgraph-cli", extra = ["inmem"] },
+    { name = "langsmith" },
+    { name = "openevals" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deepagents", specifier = ">=0.6.7" },
+    { name = "langchain", specifier = ">=1.3.2" },
+    { name = "langchain-mcp-adapters", specifier = ">=0.2.2" },
+    { name = "langchain-quickjs", specifier = ">=0.2.0" },
+    { name = "langchain-tavily", specifier = ">=0.2.18" },
+    { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.27" },
+    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.8.0" },
+    { name = "openevals", specifier = ">=0.2.0" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1238,6 +1265,21 @@ wheels = [
 ]
 
 [[package]]
+name = "langchain-tavily"
+version = "0.2.18"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "langchain" },
+    { name = "langchain-core" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d6/6c/b309ef3062b189a82463dc93553804566e71aa393f9ba8954750793c1a6f/langchain_tavily-0.2.18.tar.gz", hash = "sha256:cd7859ae1a6ce79236580ef67072ff5fc43c7ded94e7eac38ff04209ca85a320", size = 25378, upload-time = "2026-04-16T15:23:24.526Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/9c/0c043e4434b1823f0ac194f66036cbb0569275a99dcb890e0891ecd34fb2/langchain_tavily-0.2.18-py3-none-any.whl", hash = "sha256:dccf3ad1c50e2cb2a89bec11727555805c9df8abd42c1f3ad42ccad86e28aa44", size = 30814, upload-time = "2026-04-16T15:23:23.424Z" },
+]
+
+[[package]]
 name = "langgraph"
 version = "1.2.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1411,33 +1453,6 @@ otel = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
-]
-
-[[package]]
-name = "llm-research-agent"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "deepagents" },
-    { name = "langchain" },
-    { name = "langchain-mcp-adapters" },
-    { name = "langchain-quickjs" },
-    { name = "langgraph-cli", extra = ["inmem"] },
-    { name = "langsmith" },
-    { name = "openevals" },
-    { name = "tavily" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "deepagents", specifier = ">=0.6.7" },
-    { name = "langchain", specifier = ">=1.3.2" },
-    { name = "langchain-mcp-adapters", specifier = ">=0.2.2" },
-    { name = "langchain-quickjs", specifier = ">=0.2.0" },
-    { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.27" },
-    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.8.0" },
-    { name = "openevals", specifier = ">=0.2.0" },
-    { name = "tavily", specifier = ">=1.1.0" },
 ]
 
 [[package]]
@@ -2658,16 +2673,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/ef/52/9ba0f43b686e7f3dd
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/45/a132b9074aa18e799b891b91ad72133c98d8042c70f6240e4c5f9dabee2f/structlog-25.5.0-py3-none-any.whl", hash = "sha256:a8453e9b9e636ec59bd9e79bbd4a72f025981b3ba0f5837aebf48f02f37a7f9f", size = 72510, upload-time = "2025-10-27T08:28:21.535Z" },
 ]
-
-[[package]]
-name = "tavily"
-version = "1.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/63/ba/cd74acdb0537a02fb5657afbd5fd5a27a298c85fc27f544912cc001377bb/tavily-1.1.0.tar.gz", hash = "sha256:7730bf10c925dc0d0d84f27a8979de842ecf88c2882183409addd855e27d8fab", size = 5081, upload-time = "2025-10-31T09:32:40.555Z" }
 
 [[package]]
 name = "tenacity"

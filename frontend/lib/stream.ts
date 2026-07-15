@@ -7,7 +7,7 @@ export type Todo = {
 
 // Deep agent state we read in the UI. `files` is the StateBackend filesystem
 // (path -> contents); `todos` is populated by the planning middleware.
-export type ResearchState = {
+export type AmbientSpecialistState = {
   messages: unknown[];
   todos?: Todo[];
   files?: Record<string, string>;
@@ -26,7 +26,7 @@ export type Subagent = {
 };
 
 /** Shared stream from the nearest <StreamProvider>, typed to our state. */
-export const useResearch = () => useStreamContext<ResearchState>();
+export const useAmbientSpecialist = () => useStreamContext<AmbientSpecialistState>();
 
 // Messages arrive as @langchain/core BaseMessage instances, but exact accessors
 // vary across versions — read defensively so rendering never throws.

@@ -48,7 +48,7 @@ from evals.shared import DATASET, MAX_CONCURRENCY, make_target
 GATEWAY = "https://gateway.smith.langchain.com"
 # The gateway is authed by a LangSmith gateway key; ANTHROPIC_API_KEY is already
 # set to that key in this repo's .env, so it's the fallback.
-GATEWAY_KEY = os.environ.get("LANGSMITH_API_KEY_GATEWAY") or os.environ.get("ANTHROPIC_API_KEY")
+GATEWAY_KEY = os.environ.get("LC_GATEWAY_KEY") or os.environ.get("ANTHROPIC_API_KEY")
 
 
 def _spec(value: str):
@@ -94,17 +94,17 @@ def _evaluate_arm(
 
 
 def run_offline(names) -> None:
-    from llm_research_agent.agent import DEFAULT_MODEL, DEFAULT_PROVIDER, agent
+    from ambient_analyst.agent import DEFAULT_MODEL, DEFAULT_PROVIDER, agent
 
     exp = _evaluate_arm(
-        make_target(agent), names, "llm-research-offline",
+        make_target(agent), names, "ambient-analyst-offline",
         model=DEFAULT_MODEL, provider=DEFAULT_PROVIDER, eval_type="offline",
     )
     print(exp)
 
 
 def run_ab(model_a, model_b, names) -> None:
-    from llm_research_agent.agent import build_agent
+    from ambient_analyst.agent import build_agent
 
     client = Client()
     ds = client.read_dataset(dataset_name=DATASET)
@@ -202,7 +202,7 @@ def main() -> None:
             p.error("--type ab requires --model-b PROVIDER:MODEL (--model-a defaults to the agent's model)")
         model_a = args.model_a
         if model_a is None:
-            from llm_research_agent.agent import DEFAULT_MODEL, DEFAULT_PROVIDER
+            from ambient_analyst.agent import DEFAULT_MODEL, DEFAULT_PROVIDER
 
             model_a = (DEFAULT_PROVIDER, DEFAULT_MODEL)
         run_ab(model_a, args.model_b, args.evaluators)

@@ -1,9 +1,9 @@
 "use client";
 
-import { useResearch, msgToolCalls } from "@/lib/stream";
+import { useAmbientSpecialist, msgToolCalls } from "@/lib/stream";
 
 export function CapabilityChips() {
-  const stream = useResearch();
+  const stream = useAmbientSpecialist();
   const subs = [...stream.subagents.values()];
 
   const toolNames = new Set<string>();
@@ -13,16 +13,14 @@ export function CapabilityChips() {
   const hasFiles = Object.keys(stream.values?.files ?? {}).length > 0;
 
   const chips = [
-    { label: "Async subagents", on: subs.length > 0 },
     {
       label: "Dynamic subagents",
-      on: subs.length > 1 || toolNames.has("task"),
+      on: subs.length > 0 || toolNames.has("task"),
     },
     { label: "Middleware", on: (stream.values?.todos?.length ?? 0) > 0 },
-    { label: "Human-in-the-loop", on: !!stream.interrupt },
     {
       label: "Sandbox",
-      on: hasFiles || [...toolNames].some((n) => /fetch|execute|shared/.test(n)),
+      on: hasFiles || [...toolNames].some((n) => /fetch|execute|analysis/.test(n)),
     },
   ];
 

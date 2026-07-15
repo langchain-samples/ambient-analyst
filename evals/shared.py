@@ -17,7 +17,7 @@ import os
 from langchain.chat_models import init_chat_model
 from openevals.llm import create_llm_as_judge
 
-DATASET = os.environ.get("EVAL_DATASET", "llm-research-golden")
+DATASET = os.environ.get("EVAL_DATASET", "ambient-analyst-golden")
 # Serial: every agent run shares one module-level Context Hub /memory backend, so
 # concurrent runs writing /memory race the parent commit -> 409.
 MAX_CONCURRENCY = 1

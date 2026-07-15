@@ -1,6 +1,6 @@
 "use client";
 
-import { useResearch } from "@/lib/stream";
+import { useAmbientSpecialist } from "@/lib/stream";
 import { Panel, Empty } from "./Panel";
 
 const MARK = { pending: "○", in_progress: "◐", completed: "●" } as const;
@@ -11,7 +11,7 @@ const COLOR = {
 } as const;
 
 export function PlanPanel() {
-  const stream = useResearch();
+  const stream = useAmbientSpecialist();
   const todos = stream.values?.todos ?? [];
   const done = todos.filter((t) => t.status === "completed").length;
 
