@@ -41,7 +41,11 @@ from langsmith import Client
 from langsmith.sandbox import SandboxClient
 
 from llm_research_agent.utils.assistants import DEFAULT_SYSTEM_PROMPT, assistant_settings
-from llm_research_agent.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from llm_research_agent.utils.budget import (
+    ConcurrencyLimitMiddleware,
+    RecursionFloorMiddleware,
+    StepBudgetMiddleware,
+)
 from llm_research_agent.utils.pii import PIIRedactionMiddleware
 from llm_research_agent.utils.tools import fetch_page, web_search
 
@@ -101,11 +105,14 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-5.5-2026-04-23"
 
+# max_retries lets the underlying client retry transient 429s with exponential
+# backoff instead of letting a single rate-limit error propagate to the root run.
 model = init_chat_model(
     model=DEFAULT_MODEL,
     model_provider=DEFAULT_PROVIDER,
     base_url="https://gateway.smith.langchain.com/openai",
-    api_key=os.getenv('LANGSMITH_API_KEY_GATEWAY')
+    api_key=os.getenv('LANGSMITH_API_KEY_GATEWAY'),
+    max_retries=5,
 )
 
 # Mount the shared workspace at /shared/, backed by the sandbox the `coder`
@@ -176,6 +183,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         middleware=[
             PIIRedactionMiddleware(),
             RecursionFloorMiddleware(minimum=25),
+            ConcurrencyLimitMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
         ],
     ).with_config({"recursion_limit": RECURSION_LIMIT})

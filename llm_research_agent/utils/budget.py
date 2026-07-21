@@ -22,6 +22,7 @@ so it needs no extra state channel and is robust across sync/async execution.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from deepagents.middleware._utils import append_to_system_message
@@ -37,6 +38,31 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 MIN_RECURSION_LIMIT = 25
+
+# Cap simultaneous model requests so the agent and its subagents can't burst past
+# the provider rate limit and trip 429s.
+MAX_CONCURRENT_MODEL_CALLS = 6
+
+
+class ConcurrencyLimitMiddleware(AgentMiddleware):
+    """Bound the number of concurrent model calls with a shared semaphore.
+
+    Args:
+        limit: Maximum number of in-flight model requests allowed at once.
+    """
+
+    def __init__(self, limit: int = MAX_CONCURRENT_MODEL_CALLS) -> None:
+        self.limit = limit
+        self._semaphore = asyncio.Semaphore(limit)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Gate the model call through the semaphore so bursts don't trip the rate limit."""
+        async with self._semaphore:
+            return await handler(request)
 
 
 class RecursionFloorMiddleware(AgentMiddleware):

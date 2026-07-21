@@ -31,15 +31,12 @@ def _call_with_retries(call):
     attempt fails.
     """
     last_error = None
-    response = None
     for _ in range(_MAX_ATTEMPTS):
         try:
-            response = call()
+            return call()
         except Exception as exc:  # noqa: BLE001 — transient network error, retry
             last_error = exc
-    if response is None and last_error is not None:
-        raise last_error
-    return response
+    raise last_error
 
 
 def web_search(
