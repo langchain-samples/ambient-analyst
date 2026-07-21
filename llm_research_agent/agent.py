@@ -42,6 +42,7 @@ from langsmith.sandbox import SandboxClient
 
 from llm_research_agent.utils.assistants import DEFAULT_SYSTEM_PROMPT, assistant_settings
 from llm_research_agent.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from llm_research_agent.utils.memory import ConflictRetryBackend
 from llm_research_agent.utils.pii import PIIRedactionMiddleware
 from llm_research_agent.utils.tools import fetch_page, web_search
 
@@ -135,7 +136,11 @@ backend = CompositeBackend(
     default=StateBackend(),
     routes={
         "/skills/": skills_backend,
-        "/memory/": ContextHubBackend(MEMORY_REPO),
+        # Wrap the Context Hub memory backend so 409 "parent commit does not
+        # match latest" conflicts from concurrent runs are resolved with an
+        # optimistic-lock retry (re-read latest, reapply edit) instead of
+        # silently dropping the write, which the agent would then misreport.
+        "/memory/": ConflictRetryBackend(ContextHubBackend(MEMORY_REPO), max_retries=3),
         **shared_routes,
     },
 )
