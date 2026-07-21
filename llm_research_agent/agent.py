@@ -105,7 +105,10 @@ model = init_chat_model(
     model=DEFAULT_MODEL,
     model_provider=DEFAULT_PROVIDER,
     base_url="https://gateway.smith.langchain.com/openai",
-    api_key=os.getenv('LANGSMITH_API_KEY_GATEWAY')
+    api_key=os.getenv('LANGSMITH_API_KEY_GATEWAY'),
+    # Gateway base_url hides the provider/model from LangSmith, so tag every LLM
+    # span explicitly; without ls_provider/ls_model_name total_cost stays null.
+    metadata={"ls_provider": DEFAULT_PROVIDER, "ls_model_name": DEFAULT_MODEL},
 )
 
 # Mount the shared workspace at /shared/, backed by the sandbox the `coder`
@@ -184,7 +187,18 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
 def make_agent(config: RunnableConfig):
     """Graph factory: build the agent from the assistant's config (prompt + tools)."""
     system_prompt, tools = assistant_settings(config)
-    return build_agent(system_prompt=system_prompt, tools=tools)
+    agent = build_agent(system_prompt=system_prompt, tools=tools)
+    # Root-run metadata: thread_id must be the stable conversation/session id so
+    # the Threads view groups every turn; environment and user_id enable
+    # per-environment and per-user analysis. Unavailable values stay None.
+    configurable = (config or {}).get("configurable", {})
+    return agent.with_config({
+        "metadata": {
+            "thread_id": configurable.get("thread_id") or configurable.get("conversation_id"),
+            "environment": os.getenv("LLM_RESEARCH_ENV", "production"),
+            "user_id": configurable.get("user_id"),
+        }
+    })
 
 
 # Default compiled instance — imported by the offline eval. `make_agent` is what
