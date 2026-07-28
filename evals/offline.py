@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import subprocess
 import dotenv
 from langsmith import Client
+from openevals.llm import create_llm_as_judge
 
 
 dotenv.load_dotenv(override=True)
@@ -17,6 +19,8 @@ LLM_EVALUATOR = "ambient-analyst-correctness"
 CODE_EVALUATOR = "ambient-analyst-answer-present"
 JUDGE_PROMPT = "ambient-analyst-eval-correctness"
 REGRESSION_KEY = "answer_present"
+JUDGE_MODEL = "openai:gpt-5.4"
+JUDGE_MAPPING = {"inputs": "input", "outputs": "output", "reference_outputs": "referenceOutput"}
 
 ANSWER_PRESENT_CODE = """
 def perform_eval(run, example):
@@ -36,6 +40,16 @@ def import_target(spec: str):
     for name in attr.split("."):
         target = getattr(target, name)
     return target
+
+
+def git_value(*args: str) -> str:
+    return subprocess.check_output(["git", *args], text=True).strip()
+
+
+def experiment_prefix(base: str) -> str:
+    branch = git_value("rev-parse", "--abbrev-ref", "HEAD")
+    commit = git_value("rev-parse", "--short", "HEAD")
+    return f"{base}-{branch}-{commit}"
 
 
 def predict_for(target_spec):
@@ -136,13 +150,21 @@ def judge_prompt_commit():
     return next(Client().list_prompt_commits(JUDGE_PROMPT)).commit_hash
 
 
+def correctness_judge(model: str):
+    return create_llm_as_judge(
+        prompt=judge_prompt(),
+        feedback_key="correctness",
+        model=model,
+    )
+
+
 def run(args: argparse.Namespace) -> None:
     client = Client()
     results = client.evaluate(
         predict_for(args.target),
         data=args.dataset,
-        evaluators=[answer_present],
-        experiment_prefix=args.experiment_prefix,
+        evaluators=[answer_present, correctness_judge(args.judge_model)],
+        experiment_prefix=experiment_prefix(args.experiment_prefix),
         max_concurrency=args.max_concurrency,
         metadata={
             "target": args.target,
@@ -163,6 +185,13 @@ async def find_evaluator(client, name):
     return None
 
 
+async def find_dataset_evaluator(client, *, feedback_key: str, dataset_id: str):
+    async for evaluator in client.evaluators.list(feedback_key=feedback_key, limit=100):
+        if any(rule.dataset_id == dataset_id for rule in evaluator.run_rules or []):
+            return evaluator
+    return None
+
+
 async def save_evaluator(client, name, evaluator_type, feedback_key, **body):
     existing = await find_evaluator(client, name)
     kwargs = {"name": name, "extra_body": {"feedback_keys": [feedback_key]}, **body}
@@ -177,21 +206,24 @@ async def sync_evaluators(args: argparse.Namespace) -> None:
     judge_prompt()
     commit_hash = judge_prompt_commit()
     client = Client()
+    llm_config = {
+        "prompt_repo_handle": JUDGE_PROMPT,
+        "commit_hash_or_tag": commit_hash,
+        "variable_mapping": JUDGE_MAPPING,
+        "use_corrections_dataset": False,
+        "num_few_shot_examples": 0,
+    }
     llm = await save_evaluator(
         client,
         args.llm_evaluator,
         "llm",
         "correctness",
-        llm_evaluator={
-            "prompt_repo_handle": JUDGE_PROMPT,
-            "commit_hash_or_tag": commit_hash,
-            "variable_mapping": {
-                "inputs": "inputs",
-                "outputs": "outputs",
-                "reference_outputs": "reference_outputs",
-            },
-        },
+        llm_evaluator=llm_config,
     )
+    online_llm = await find_dataset_evaluator(client, feedback_key="correctness", dataset_id=args.dataset)
+    if online_llm and online_llm.id != llm.id:
+        await client.evaluators.update(online_llm.id, llm_evaluator=llm_config)
+        online_llm = await client.evaluators.retrieve(online_llm.id)
     code = await save_evaluator(
         client,
         args.code_evaluator,
@@ -200,6 +232,8 @@ async def sync_evaluators(args: argparse.Namespace) -> None:
         code_evaluator={"code": ANSWER_PRESENT_CODE, "language": "python"},
     )
     print(f"{llm.name}: {llm.id} {llm.feedback_keys}")
+    if online_llm:
+        print(f"{online_llm.name}: {online_llm.id} dataset rule synced")
     print(f"{code.name}: {code.id} {code.feedback_keys}")
 
 
@@ -210,6 +244,9 @@ def self_test() -> None:
     assert average_score({"answer_present": {"avg": 0.5}}, "answer_present") == 0.5
     row = {"evaluation_results": {"results": [{"key": "answer_present", "score": True}]}}
     assert result_score([row], "answer_present") == 1.0
+    prefix = experiment_prefix("test")
+    assert git_value("rev-parse", "--abbrev-ref", "HEAD") in prefix
+    assert git_value("rev-parse", "--short", "HEAD") in prefix
     print("self-test passed")
 
 
@@ -221,6 +258,7 @@ def main() -> None:
     parser.add_argument("--code-evaluator", default=CODE_EVALUATOR)
     parser.add_argument("--experiment-prefix", default="ambient-analyst-offline")
     parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument("--judge-model", default=JUDGE_MODEL)
     parser.add_argument("--regression-check", action="store_true")
     parser.add_argument("--regression-key", default=REGRESSION_KEY)
     parser.add_argument("--sync-evaluators", action="store_true")
