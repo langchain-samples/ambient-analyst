@@ -23,7 +23,6 @@ import logging
 import os
 import pathlib
 import tempfile
-from typing import Annotated
 
 from deepagents import create_deep_agent, DeepAgentState
 from deepagents.backends import StateBackend
@@ -46,10 +45,12 @@ from ambient_analyst.utils.assistants import (
 )
 from ambient_analyst.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
 from ambient_analyst.utils.pii import PIIRedactionMiddleware
+from ambient_analyst.utils.retry import rate_limit_retry_middleware
 
 import dotenv
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(override=True)
+
 
 logger = logging.getLogger(__name__)
 
@@ -99,13 +100,13 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 # Default agent model — exported so the eval suite can record it in experiment
 # metadata (single source of truth for the "what model ran" tag).
 DEFAULT_PROVIDER = "openai"
-DEFAULT_MODEL = "gpt-5.5-2026-04-23"
+DEFAULT_MODEL = "gpt-5.4-mini-2026-03-17"
 
 model = init_chat_model(
     model=DEFAULT_MODEL,
     model_provider=DEFAULT_PROVIDER,
     base_url="https://gateway.smith.langchain.com/openai",
-    api_key=os.getenv('LC_GATEWAY_KEY')
+    api_key=os.getenv("LC_GATEWAY_KEY")
 )
 
 # Mount a persistent analysis environment. Create it on first startup and reuse
@@ -183,6 +184,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         memory=MEMORY_SOURCES,
         subagents=DYNAMIC_SUBAGENTS,
         middleware=[
+            rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
             RecursionFloorMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),

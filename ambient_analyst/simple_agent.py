@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnableConfig
 
 from ambient_analyst.utils.assistants import assistant_settings
 from ambient_analyst.utils.pii import PIIRedactionMiddleware
+from ambient_analyst.utils.retry import rate_limit_retry_middleware
 
 # ponytail: same gateway model init as agent.py, duplicated on purpose so
 # importing this graph doesn't pull agent.py's skills or connect its sandbox.
@@ -21,6 +22,10 @@ model = init_chat_model(
     model=os.environ.get("AMBIENT_ANALYST_MODEL", "claude-sonnet-4-6"),
     model_provider="anthropic",
     base_url="https://gateway.smith.langchain.com/anthropic",
+    api_key=os.getenv("LANGSMITH_API_KEY_GATEWAY")
+    or os.getenv("LANGSMITH_API_KEY")
+    or os.getenv("LC_GATEWAY_KEY")
+    or os.getenv("ANTHROPIC_API_KEY"),
 )
 
 
@@ -30,5 +35,5 @@ def make_agent(config: RunnableConfig):
         model=model,
         tools=tools,
         system_prompt=system_prompt,
-        middleware=[PIIRedactionMiddleware()],
+        middleware=[rate_limit_retry_middleware(), PIIRedactionMiddleware()],
     )
