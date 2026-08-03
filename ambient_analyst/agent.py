@@ -196,7 +196,10 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
 def make_agent(config: RunnableConfig):
     """Graph factory: build the agent from the assistant's config (prompt + tools).
     """
-    system_prompt, tools = assistant_settings(config)
+    # filesystem=True: this harness's read_file/write_file/edit_file come from the
+    # deepagents backend rather than `tools`, so the prompt's /memory/, /skills/,
+    # and /analysis/ sections are backed by real capabilities here.
+    system_prompt, tools = assistant_settings(config, filesystem=True)
     return build_agent(system_prompt=system_prompt, tools=tools)
 
 
