@@ -19,12 +19,19 @@ from typing import TYPE_CHECKING
 from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
 
+from ambient_analyst.utils.tool_results import line_delimited_tool
+
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
 
-tavily_search = TavilySearch(max_results=5)
-tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
+# Search/extract payloads are the results that overflow the context window and get
+# offloaded to `/large_tool_results/`; the wrapper makes them newline-delimited so
+# the harness' line-based `offset`/`limit` pagination advice actually works.
+tavily_search = line_delimited_tool(TavilySearch(max_results=5))
+tavily_extract = line_delimited_tool(
+    TavilyExtract(extract_depth="advanced", format="markdown")
+)
 
 TOOLS = {
     "tavily_search": tavily_search,
