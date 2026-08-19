@@ -38,7 +38,10 @@ implications. LLM research and model evaluation remain a specialist capability.
   `ambient-analyst-prompt` at startup (its system message), not hard-coded.
 - **Continuous learning** — the agent updates memory and the scorecard with its
   own `write_file`/`edit_file` tools, which commit straight back to the Context
-  Hub. Knowledge compounds across sessions instead of restarting each time.
+  Hub. Knowledge compounds across sessions instead of restarting each time. A
+  `MemoryAssertionMiddleware` reconciles the final answer's "what I saved" claim
+  against the run's actual tool calls, so an answer can only claim persistence
+  when a `/memory/` write really succeeded.
 - **Bounded research** — the prompt sets a search budget and stopping criteria,
   and a `StepBudgetMiddleware` forces a clean, tool-free final answer once the
   model-turn budget is nearly spent. A `recursion_limit` (`agent.py`) is the hard

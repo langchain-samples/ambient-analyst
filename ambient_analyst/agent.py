@@ -44,6 +44,7 @@ from ambient_analyst.utils.assistants import (
     assistant_settings,
 )
 from ambient_analyst.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from ambient_analyst.utils.memory_assertion import MemoryAssertionMiddleware
 from ambient_analyst.utils.pii import PIIRedactionMiddleware
 from ambient_analyst.utils.retry import rate_limit_retry_middleware
 
@@ -188,6 +189,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
             PIIRedactionMiddleware(),
             RecursionFloorMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
+            MemoryAssertionMiddleware(),
             CodeInterpreterMiddleware(),
         ],
     ).with_config({"recursion_limit": RECURSION_LIMIT})
