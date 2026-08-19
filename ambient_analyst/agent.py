@@ -27,7 +27,6 @@ import tempfile
 from deepagents import create_deep_agent, DeepAgentState
 from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
-from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from langchain.chat_models import init_chat_model
@@ -44,6 +43,7 @@ from ambient_analyst.utils.assistants import (
     assistant_settings,
 )
 from ambient_analyst.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from ambient_analyst.utils.memory_guard import AppendOnlyContextHubBackend
 from ambient_analyst.utils.pii import PIIRedactionMiddleware
 from ambient_analyst.utils.retry import rate_limit_retry_middleware
 
@@ -72,8 +72,14 @@ SANDBOX_NAME = os.environ.get(
     "AMBIENT_ANALYST_SANDBOX", "ambient-analyst-sandbox"
 )
 
-# Memory files loaded into context every run.
-MEMORY_SOURCES = ["/memory/AGENTS.md", "/memory/scorecard.md"]
+# Memory files loaded into context every run. The write protocol comes first so
+# the append-with-edit_file rule is in context before the corpus it governs;
+# missing sources are skipped by the memory middleware.
+MEMORY_SOURCES = [
+    "/memory/memory-write-protocol.md",
+    "/memory/AGENTS.md",
+    "/memory/scorecard.md",
+]
 
 # Bounded research: hard step backstop + graceful final-answer turn budget.
 RECURSION_LIMIT = 75
@@ -136,12 +142,14 @@ except Exception as exc:  # noqa: BLE001 — sandbox is optional at startup
 
 # Scratch files stay ephemeral in state; /skills serves the pulled skill repos;
 # /memory persists to the LangSmith Context Hub; /analysis/ is the managed
-# sandbox for calculations and artifacts.
+# sandbox for calculations and artifacts. Memory is append/patch-only: the agent
+# reads it in bounded windows, so a whole-file write_file would drop everything
+# past the read limit (see utils/memory_guard.py).
 backend = CompositeBackend(
     default=StateBackend(),
     routes={
         "/skills/": skills_backend,
-        "/memory/": ContextHubBackend(MEMORY_REPO),
+        "/memory/": AppendOnlyContextHubBackend(MEMORY_REPO, mount="/memory/"),
         **sandbox_routes,
     },
 )

@@ -56,7 +56,7 @@ staging the skills locally so a `CompositeBackend` can serve them:
 
 ```
 /skills/   ─▶ FilesystemBackend(temp dir, virtual_mode=True)  # skill repos pulled at startup (progressive disclosure)
-/memory/   ─▶ ContextHubBackend("ambient-analyst-memory")        # AGENTS.md + scorecard.md (agent-written, persistent)
+/memory/   ─▶ AppendOnlyContextHubBackend("ambient-analyst-memory") # AGENTS.md + scorecard.md (agent-written, persistent, edit-only)
 everything else ─▶ StateBackend()                             # ephemeral scratch (todos, working notes)
 ```
 
