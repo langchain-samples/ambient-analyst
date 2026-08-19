@@ -13,7 +13,9 @@ Storage in LangSmith (workspace-scoped API key resolves its own tenant — no
   discovers them with progressive disclosure.
 - **Memory**: Context Hub *agent repo* `ambient-analyst-memory` (`AGENTS.md` +
   `scorecard.md`), mounted at `/memory/` and written back at runtime — the
-  ambient-analyst-continuous-learning loop.
+  ambient-analyst-continuous-learning loop. Injected under a character budget
+  (see `utils/memory.py`) because memory is re-serialized into the prompt on
+  every model turn.
 - **Analysis sandbox**: a LangSmith sandbox mounted at `/analysis/` for data
   analysis, calculations, charts, and intermediate artifacts.
 - A `CompositeBackend` keeps scratch files ephemeral (`StateBackend`).
@@ -44,6 +46,7 @@ from ambient_analyst.utils.assistants import (
     assistant_settings,
 )
 from ambient_analyst.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from ambient_analyst.utils.memory import BudgetedMemoryMiddleware, check_memory_corpus
 from ambient_analyst.utils.pii import PIIRedactionMiddleware
 from ambient_analyst.utils.retry import rate_limit_retry_middleware
 
@@ -72,8 +75,19 @@ SANDBOX_NAME = os.environ.get(
     "AMBIENT_ANALYST_SANDBOX", "ambient-analyst-sandbox"
 )
 
-# Memory files loaded into context every run.
+# Memory files loaded into context every run. Order matters: the durable
+# instructions come first and are kept head-first when the budget bites, the
+# append-only scorecard follows and is kept tail-first (see utils/memory.py).
 MEMORY_SOURCES = ["/memory/AGENTS.md", "/memory/scorecard.md"]
+
+# Memory is re-serialized into the system prompt on every model turn, so the
+# mounted corpus is a fixed per-turn token cost. Cap what can reach the prompt;
+# anything over the cap stays reachable through grep/read_file on /memory/.
+MEMORY_CHAR_BUDGET = int(
+    os.environ.get("AMBIENT_ANALYST_MEMORY_CHAR_BUDGET", "40000")
+)
+# Set to 1 (e.g. in CI) to make an over-budget memory corpus a hard failure.
+MEMORY_BUDGET_STRICT = os.environ.get("AMBIENT_ANALYST_MEMORY_STRICT", "") == "1"
 
 # Bounded research: hard step backstop + graceful final-answer turn budget.
 RECURSION_LIMIT = 75
@@ -146,6 +160,11 @@ backend = CompositeBackend(
     },
 )
 
+# Catch unbounded memory growth at startup rather than in production token spend.
+check_memory_corpus(
+    backend, MEMORY_SOURCES, MEMORY_CHAR_BUDGET, strict=MEMORY_BUDGET_STRICT
+)
+
 # Regular (dict-form) subagents. With CodeInterpreterMiddleware, the agent can
 # dispatch these from interpreter code via task() — dynamic fan-out — when a
 # request is phrased as a "workflow" (e.g. "run a workflow that analyzes each of
@@ -181,11 +200,23 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
         backend=backend,
         skills=["/skills/"],
-        memory=MEMORY_SOURCES,
         subagents=DYNAMIC_SUBAGENTS,
         middleware=[
             rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
+            # Passed here instead of via `memory=` so the block is size-capped.
+            # deepagents' MemoryMiddleware already loads the files once per
+            # request, but it re-injects them into the system prompt on every
+            # model turn and offers no before-agent-only mode — the budget, not
+            # the injection point, is what bounds the cost. Note the harness's
+            # AnthropicPromptCachingMiddleware is inert here: this agent runs an
+            # OpenAI model through the gateway.
+            BudgetedMemoryMiddleware(
+                backend=backend,
+                sources=MEMORY_SOURCES,
+                add_cache_control=True,
+                char_budget=MEMORY_CHAR_BUDGET,
+            ),
             RecursionFloorMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
             CodeInterpreterMiddleware(),
