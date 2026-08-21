@@ -11,9 +11,13 @@ dependencies = [
     "langchain-quickjs>=0.2.0",
     "langchain-tavily>=0.2.18",
     "langgraph-cli[inmem]>=0.4.27",
-    "langsmith[sandbox]>=0.8.0",
+    "langsmith[livekit,sandbox]>=0.10.4",
+    "livekit-agents[langchain,openai,silero,turn-detector]~=1.5",
     "openevals>=0.2.0",
 ]
+
+[project.scripts]
+ambient-analyst-voice = "ambient_analyst.voice.livekit_worker:main"
 
 [build-system]
 requires = ["setuptools>=61"]

@@ -100,13 +100,14 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 # Default agent model — exported so the eval suite can record it in experiment
 # metadata (single source of truth for the "what model ran" tag).
 DEFAULT_PROVIDER = "openai"
-DEFAULT_MODEL = "gpt-5.4-mini-2026-03-17"
+DEFAULT_MODEL = "gpt-5.6"
 
 model = init_chat_model(
     model=DEFAULT_MODEL,
     model_provider=DEFAULT_PROVIDER,
     base_url="https://gateway.smith.langchain.com/openai",
-    api_key=os.getenv("LC_GATEWAY_KEY")
+    api_key=os.getenv("LC_GATEWAY_KEY"),
+    reasoning_effort="none",
 )
 
 # Mount a persistent analysis environment. Create it on first startup and reuse
@@ -193,11 +194,34 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
     ).with_config({"recursion_limit": RECURSION_LIMIT})
 
 
+def _chat_model_from_config(config: RunnableConfig):
+    cfg = (config or {}).get("configurable") or {}
+    configured = cfg.get("model")
+    if not configured:
+        return model
+
+    if ":" in configured:
+        provider, model_name = configured.split(":", 1)
+    else:
+        provider, model_name = DEFAULT_PROVIDER, configured
+    return init_chat_model(
+        model=model_name,
+        model_provider=provider,
+        base_url=f"https://gateway.smith.langchain.com/{provider}",
+        api_key=os.getenv("LC_GATEWAY_KEY"),
+        reasoning_effort="none" if provider == "openai" else None,
+    )
+
+
 def make_agent(config: RunnableConfig):
     """Graph factory: build the agent from the assistant's config (prompt + tools).
     """
     system_prompt, tools = assistant_settings(config)
-    return build_agent(system_prompt=system_prompt, tools=tools)
+    return build_agent(
+        chat_model=_chat_model_from_config(config),
+        system_prompt=system_prompt,
+        tools=tools,
+    )
 
 
 # Default compiled instance — imported by the offline eval. `make_agent` is what

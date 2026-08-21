@@ -6,6 +6,7 @@ venv/
 .python-version
 .langgraph_api
 .claude
+evals/jobs/
 
 # Python build artifacts
 build/

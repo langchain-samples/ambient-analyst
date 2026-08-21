@@ -16,12 +16,15 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+import dotenv
 from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
+
+dotenv.load_dotenv(override=True)
 
 tavily_search = TavilySearch(max_results=5)
 tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
