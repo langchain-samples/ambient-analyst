@@ -1,0 +1,52 @@
+{
+  "prompt": {
+    "handle": "langchain-ai/ambient-analyst-prompt",
+    "commit_hash": "8f3d8b9f85b075891f381527c33cda48d7b94fb1faabca83467ccbc620833f0f",
+    "file": "prompt.md"
+  },
+  "agent": {
+    "handle": "ambient-analyst-memory",
+    "commit_hash": "f8afc22761fe4eef2c0b8e23204e2792c2e019bdb78a4555c7619dc3cc2b6535",
+    "files": [
+      "AGENTS.md",
+      "oil-market-notes.md",
+      "oil_market_note_2026_07_20.md",
+      "research-standards-grounding.md",
+      "scorecard.md",
+      "tmp_agents_append.txt",
+      "tmp_fiscal_note.md"
+    ]
+  },
+  "skills": {
+    "ambient-analyst-model-evaluation": {
+      "commit_hash": "7ca9557395e35d0b6113d8b23fc2a703cf9637436d37ecff272bef14a4e22bfe",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "ambient-analyst-benchmark-analysis": {
+      "commit_hash": "13ac11f11da376e588cb84825ed88d05298f27aaaa90c6f694abf572f34161d9",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "ambient-analyst-landscape-mapping": {
+      "commit_hash": "13ac11f11da376e588cb84825ed88d05298f27aaaa90c6f694abf572f34161d9",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "ambient-analyst-scorecard-maintenance": {
+      "commit_hash": "13ac11f11da376e588cb84825ed88d05298f27aaaa90c6f694abf572f34161d9",
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    "ambient-analyst-continuous-learning": {
+      "commit_hash": "13ac11f11da376e588cb84825ed88d05298f27aaaa90c6f694abf572f34161d9",
+      "files": [
+        "SKILL.md"
+      ]
+    }
+  }
+}

@@ -23,6 +23,7 @@ import logging
 import os
 import pathlib
 import tempfile
+from typing import TYPE_CHECKING
 
 from deepagents import create_deep_agent, DeepAgentState
 from deepagents.backends import StateBackend
@@ -35,37 +36,30 @@ from langchain_core.messages import AnyMessage
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import add_messages
+from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
 from langsmith.sandbox import SandboxClient
 
-from ambient_analyst.utils.assistants import (
-    DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_TOOLS,
-    assistant_settings,
-)
-from ambient_analyst.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
-from ambient_analyst.utils.pii import PIIRedactionMiddleware
-from ambient_analyst.utils.retry import rate_limit_retry_middleware
+from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from agent.harness.context import MEMORY_REPO, SKILL_HANDLES, prompt_identifier
+from agent.harness.pii import PIIRedactionMiddleware
+from agent.harness.retry import rate_limit_retry_middleware
 
 import dotenv
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
 
 dotenv.load_dotenv(override=True)
 
 
 logger = logging.getLogger(__name__)
 
-# LangSmith resources (override via env to target staging vs production).
-MEMORY_REPO = os.environ.get("AMBIENT_ANALYST_MEMORY_REPO", "ambient-analyst-memory")
-# Each skill is its own Context Hub skill repo; handle == skill (and directory) name.
-SKILL_HANDLES = [
-    h.strip()
-    for h in os.environ.get(
-        "AMBIENT_ANALYST_SKILLS",
-        "ambient-analyst-model-evaluation,ambient-analyst-benchmark-analysis,ambient-analyst-landscape-mapping,"
-        "ambient-analyst-scorecard-maintenance,ambient-analyst-continuous-learning",
-    ).split(",")
-    if h.strip()
-]
+tavily_search = TavilySearch(max_results=5)
+tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
+TOOLS = {"tavily_search": tavily_search, "tavily_extract": tavily_extract}
+DEFAULT_TOOLS = [tavily_search, tavily_extract]
+PROMPT_NAME = os.environ.get("AMBIENT_ANALYST_PROMPT_NAME", "ambient-analyst-prompt")
 
 # Stable sandbox for analysis artifacts.
 SANDBOX_NAME = os.environ.get(
@@ -80,6 +74,10 @@ RECURSION_LIMIT = 75
 MAX_MODEL_TURNS = 25
 
 client = Client()
+DEFAULT_SYSTEM_PROMPT = client.pull_prompt(
+    prompt_identifier(client),
+    dangerously_pull_public_prompt=True,
+).messages[0].prompt.template
 
 # The system prompt and tool selection come from the assistant's config (see
 # utils/assistants.py); `build_agent` takes them as arguments and the `make_agent`
@@ -100,13 +98,14 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 # Default agent model — exported so the eval suite can record it in experiment
 # metadata (single source of truth for the "what model ran" tag).
 DEFAULT_PROVIDER = "openai"
-DEFAULT_MODEL = "gpt-5.4-mini-2026-03-17"
+DEFAULT_MODEL = "gpt-5.6-luna"
 
 model = init_chat_model(
     model=DEFAULT_MODEL,
     model_provider=DEFAULT_PROVIDER,
     base_url="https://gateway.smith.langchain.com/openai",
-    api_key=os.getenv("LC_GATEWAY_KEY")
+    api_key=os.getenv("LC_GATEWAY_KEY"),
+    reasoning_effort="none",
 )
 
 # Mount a persistent analysis environment. Create it on first startup and reuse
@@ -167,6 +166,14 @@ DYNAMIC_SUBAGENTS = [
     },
 ]
 
+
+def assistant_settings(config: RunnableConfig | None) -> tuple[str, list["BaseTool"]]:
+    cfg = (config or {}).get("configurable") or {}
+    names = cfg.get("tools")
+    tools = [TOOLS[n] for n in names if n in TOOLS] if names is not None else DEFAULT_TOOLS
+    return cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT, tools
+
+
 def build_agent(chat_model=None, system_prompt=None, tools=None):
     """Build the Ambient Analyst agent.
 
@@ -193,11 +200,34 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
     ).with_config({"recursion_limit": RECURSION_LIMIT})
 
 
+def _chat_model_from_config(config: RunnableConfig):
+    cfg = (config or {}).get("configurable") or {}
+    configured = cfg.get("model")
+    if not configured:
+        return model
+
+    if ":" in configured:
+        provider, model_name = configured.split(":", 1)
+    else:
+        provider, model_name = DEFAULT_PROVIDER, configured
+    return init_chat_model(
+        model=model_name,
+        model_provider=provider,
+        base_url=f"https://gateway.smith.langchain.com/{provider}",
+        api_key=os.getenv("LC_GATEWAY_KEY"),
+        reasoning_effort="none" if provider == "openai" else None,
+    )
+
+
 def make_agent(config: RunnableConfig):
     """Graph factory: build the agent from the assistant's config (prompt + tools).
     """
     system_prompt, tools = assistant_settings(config)
-    return build_agent(system_prompt=system_prompt, tools=tools)
+    return build_agent(
+        chat_model=_chat_model_from_config(config),
+        system_prompt=system_prompt,
+        tools=tools,
+    )
 
 
 # Default compiled instance — imported by the offline eval. `make_agent` is what
