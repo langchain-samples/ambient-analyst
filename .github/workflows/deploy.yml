@@ -25,4 +25,4 @@ jobs:
         run: uv sync --frozen
 
       - name: Self-test eval runner
-        run: uv run python src/evals/pr_check.py
+        run: uv run python -m src.evals.pr_check

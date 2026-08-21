@@ -34,7 +34,8 @@ import dotenv
 
 dotenv.load_dotenv()
 
-DEFAULT_URL = "https://ambient-analyst-green-fa41f97de119549eb13db912e4607dc8.us.langgraph.app"
+# DEFAULT_URL = "https://ambient-analyst-green-fa41f97de119549eb13db912e4607dc8.us.langgraph.app"
+DEFAULT_URL = "https://ambient-analyst-blue-9e53d7f1c31059d3b30cb495b9aa783a.us.langgraph.app"
 DEFAULT_ASSISTANT = "ambient-analyst"
 
 # ---------------------------------------------------------------------------
