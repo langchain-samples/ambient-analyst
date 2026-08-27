@@ -34,9 +34,10 @@ implications. LLM research and model evaluation remain a specialist capability.
   `scorecard.md` (ranked best-models-per-category, with scores, sources, dates,
   and caveats), in the Context Hub agent repo `ambient-analyst-memory`. Loaded into
   context every run.
-- **Hot-path memory** — `hot_path_record_memory` appends cheap, auditable events
-  to `/memory/hot-path-events.jsonl` during the current run: explicit user
-  preferences, detector hits, evidence links, and other high-confidence facts.
+- **Hot-path memory** — `SemanticPreferenceMiddleware` extracts explicit user
+  preferences with regex, and `HotPathMemoryMiddleware` appends selected
+  completed tool-call events. Both write to `/memory/hot-path-events.jsonl`
+  during the current run.
 - **Cold-path memory** — `memory-consolidator` reviews repeated hot-path events
   later and promotes durable patterns into `/memory/cold-path-memory.md` rather
   than rewriting broad memory summaries on every request.
@@ -79,8 +80,8 @@ the [frontend visualizer](#frontend-capability-visualizer) is built to show off:
 
 - **Context-engineered memory paths** — short-term scratch lives in graph state,
   durable memory lives under `/memory/`, cheap events are captured on the hot
-  path, and repeated patterns are consolidated on the cold path by a narrow
-  subagent.
+  path by middleware, and repeated patterns are consolidated on the cold path by
+  a narrow subagent.
 - **Interpreters as context compressors** — `run_context_interpreter` uses code to
   count and summarize event JSON before the LLM judges what should become memory.
   `CodeInterpreterMiddleware` remains available for workflow-style fan-out and
@@ -92,8 +93,9 @@ the [frontend visualizer](#frontend-capability-visualizer) is built to show off:
   indicators, or scenarios in parallel. `memory-consolidator` handles cold-path
   memory reflection in an isolated context.
 - **Middleware** — a custom stack (PII redaction, a recursion floor, and a step
-  budget that forces a clean final answer near the turn limit) plus the built-in
-  planning (todos) and code-interpreter middleware.
+  budget that forces a clean final answer near the turn limit, semantic
+  preference extraction, and hot-path tool-call memory) plus the built-in planning
+  (todos) and code-interpreter middleware.
 - **Sandbox** — a LangSmith managed sandbox mounted at `/analysis/` (via
   `CompositeBackend`) for calculations, datasets, charts, and artifacts.
 

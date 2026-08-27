@@ -40,10 +40,11 @@ from langsmith.sandbox import SandboxClient
 
 from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
 from agent.harness.context import MEMORY_REPO, SKILL_HANDLES, prompt_identifier
-from agent.harness.memory_tools import (
+from agent.harness.memory import (
     COLD_MEMORY_PATH,
+    HotPathMemoryMiddleware,
     MEMORY_EVENTS_PATH,
-    hot_path_record_memory,
+    SemanticPreferenceMiddleware,
     run_context_interpreter,
 )
 from agent.harness.pii import PIIRedactionMiddleware
@@ -64,13 +65,11 @@ tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
 TOOLS = {
     "tavily_search": tavily_search,
     "tavily_extract": tavily_extract,
-    "hot_path_record_memory": hot_path_record_memory,
     "run_context_interpreter": run_context_interpreter,
 }
 DEFAULT_TOOLS = [
     tavily_search,
     tavily_extract,
-    hot_path_record_memory,
     run_context_interpreter,
 ]
 PROMPT_NAME = os.environ.get("AMBIENT_ANALYST_PROMPT_NAME", "ambient-analyst-prompt")
@@ -221,6 +220,8 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         middleware=[
             rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
+            SemanticPreferenceMiddleware(),
+            HotPathMemoryMiddleware({"tavily_search", "tavily_extract", "task"}),
             RecursionFloorMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
             CodeInterpreterMiddleware(),
