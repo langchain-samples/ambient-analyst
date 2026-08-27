@@ -25,23 +25,28 @@ import pathlib
 import tempfile
 from typing import TYPE_CHECKING
 
-from deepagents import create_deep_agent, DeepAgentState
+from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AnyMessage
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph.message import add_messages
 from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
 from langsmith.sandbox import SandboxClient
 
 from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
 from agent.harness.context import MEMORY_REPO, SKILL_HANDLES, prompt_identifier
+from agent.harness.memory import (
+    COLD_MEMORY_PATH,
+    HotPathMemoryMiddleware,
+    MEMORY_EVENTS_PATH,
+    SemanticPreferenceMiddleware,
+    run_context_interpreter,
+)
 from agent.harness.pii import PIIRedactionMiddleware
 from agent.harness.retry import rate_limit_retry_middleware
 
@@ -57,8 +62,16 @@ logger = logging.getLogger(__name__)
 
 tavily_search = TavilySearch(max_results=5)
 tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
-TOOLS = {"tavily_search": tavily_search, "tavily_extract": tavily_extract}
-DEFAULT_TOOLS = [tavily_search, tavily_extract]
+TOOLS = {
+    "tavily_search": tavily_search,
+    "tavily_extract": tavily_extract,
+    "run_context_interpreter": run_context_interpreter,
+}
+DEFAULT_TOOLS = [
+    tavily_search,
+    tavily_extract,
+    run_context_interpreter,
+]
 PROMPT_NAME = os.environ.get("AMBIENT_ANALYST_PROMPT_NAME", "ambient-analyst-prompt")
 
 # Stable sandbox for analysis artifacts.
@@ -164,6 +177,20 @@ DYNAMIC_SUBAGENTS = [
             "cite dated primary sources. Return a concise analyst brief."
         ),
     },
+    {
+        "name": "memory-consolidator",
+        "description": (
+            "Cold-path worker. Consolidates repeated hot-path memory events into "
+            "durable analyst preferences, standing filters, or summary updates."
+        ),
+        "system_prompt": (
+            f"Read hot-path events from {MEMORY_EVENTS_PATH}. Use "
+            "run_context_interpreter to count repeated topics and event kinds. "
+            f"Update {COLD_MEMORY_PATH} only for durable patterns with clear "
+            "evidence; do not rewrite broad memory summaries for one-off events."
+        ),
+        "tools": [run_context_interpreter],
+    },
 ]
 
 
@@ -193,6 +220,8 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         middleware=[
             rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
+            SemanticPreferenceMiddleware(),
+            HotPathMemoryMiddleware({"tavily_search", "tavily_extract", "task"}),
             RecursionFloorMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
             CodeInterpreterMiddleware(),

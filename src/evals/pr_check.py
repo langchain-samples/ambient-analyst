@@ -15,6 +15,13 @@ LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
 
 
 def call_preview_agent(inputs: dict) -> dict:
+    ###
+    ### ANY CUSTOM LOGC/DATA HERE
+    ###
+
+    ###
+    ### CALL AGENT
+    ###
     response = requests.post(
         f"{PREVIEW_BASE_URL}/runs/wait",
         headers={
@@ -34,9 +41,9 @@ def call_preview_agent(inputs: dict) -> dict:
 
 def main():
     return evaluate(
-        call_preview_agent,
-        data=DATASET_NAME,
-        evaluators=None,
+        call_preview_agent, # target function
+        data=DATASET_NAME, # input data to agent
+        evaluators=None, # custom evaluators
         experiment_prefix="ambient-analyst-relevant-pr_",
         max_concurrency=1,
     )
