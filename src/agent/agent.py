@@ -44,6 +44,7 @@ from agent.harness.memory import (
     COLD_MEMORY_PATH,
     HotPathMemoryMiddleware,
     MEMORY_EVENTS_PATH,
+    MemoryWriteGuardMiddleware,
     SemanticPreferenceMiddleware,
     run_context_interpreter,
 )
@@ -79,7 +80,8 @@ SANDBOX_NAME = os.environ.get(
     "AMBIENT_ANALYST_SANDBOX", "ambient-analyst-sandbox"
 )
 
-# Memory files loaded into context every run.
+# Memory files loaded into context every run, and therefore the only durable
+# write targets under /memory/ (enforced by MemoryWriteGuardMiddleware).
 MEMORY_SOURCES = ["/memory/AGENTS.md", "/memory/scorecard.md"]
 
 # Bounded research: hard step backstop + graceful final-answer turn budget.
@@ -221,6 +223,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
             rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
             SemanticPreferenceMiddleware(),
+            MemoryWriteGuardMiddleware(MEMORY_SOURCES),
             HotPathMemoryMiddleware({"tavily_search", "tavily_extract", "task"}),
             RecursionFloorMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
