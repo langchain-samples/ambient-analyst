@@ -8,7 +8,7 @@ from langsmith import evaluate
 logger = logging.getLogger(__name__)
 dotenv.load_dotenv()
 
-DATASET_NAME = "ambient-analyst-relevant"
+DATASET_NAME = "ambient-analyst-golden-8"
 ASSISTANT_ID = os.getenv("ASSISTANT_ID", "ambient-analyst")
 
 
