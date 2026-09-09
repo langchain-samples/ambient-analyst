@@ -1,8 +1,16 @@
-"""Agent memory middleware and compact event analysis tools."""
+"""Agent memory middleware and compact event analysis tools.
+
+deepagents' `MemoryMiddleware` loads `/memory/` once per request but re-injects
+the whole block into the system prompt on every model turn, so the mounted
+corpus is a fixed per-turn token cost with no before-agent-only mode to switch
+to. `BudgetedMemoryMiddleware` bounds that cost; `check_memory_corpus` reports
+growth past the budget at startup.
+"""
 
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -11,6 +19,7 @@ import re
 from typing import Any
 
 from deepagents.backends.context_hub import ContextHubBackend
+from deepagents.middleware.memory import MemoryMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
@@ -24,6 +33,13 @@ MEMORY_EVENTS_FILE = "hot-path-events.jsonl"
 MEMORY_EVENTS_PATH = f"/memory/{MEMORY_EVENTS_FILE}"
 MEMORY_EVENTS_MAX_LINES = 500
 COLD_MEMORY_PATH = "/memory/cold-path-memory.md"
+MEMORY_TRUNCATION_NOTICE = (
+    "[MEMORY TRUNCATED: {elided} of {total} characters of {path} were elided to "
+    "stay within the {budget}-character memory budget, so what you see above is "
+    "incomplete. Do not assume the omitted content does not exist — use the "
+    "`grep` and `read_file` tools against `{path}` to retrieve anything you need "
+    "from the part that is not shown.]"
+)
 _PREFERENCE_PATTERNS = [
     re.compile(r"\bremember that (?P<preference>[^\n]+?)(?:[.!?](?:\s|$)|$)", re.I),
     re.compile(r"\bi prefer (?P<preference>[^\n]+?)(?:[.!?](?:\s|$)|$)", re.I),
@@ -202,6 +218,140 @@ class SemanticPreferenceMiddleware(AgentMiddleware):
                 )
 
 
+class MemoryBudgetExceededError(RuntimeError):
+    """Raised by `check_memory_corpus` in strict mode when memory outgrows its budget."""
+
+
+def _keep_lines(text: str, budget: int, *, from_end: bool) -> str:
+    """Return as many whole lines of `text` as fit in `budget` characters."""
+    if budget <= 0:
+        return ""
+    lines = text.splitlines(keepends=True)
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines) if from_end else lines:
+        if used + len(line) > budget:
+            break
+        kept.append(line)
+        used += len(line)
+    if from_end:
+        kept.reverse()
+    return "".join(kept)
+
+
+def _allocate(sizes: dict[str, int], budget: int) -> dict[str, int]:
+    """Split `budget` across sources, letting small sources release their slack."""
+    allocation: dict[str, int] = {}
+    pending = dict(sizes)
+    remaining = budget
+    while pending:
+        share = remaining // len(pending)
+        satisfied = [path for path, size in pending.items() if size <= share]
+        if not satisfied:
+            allocation.update({path: share for path in pending})
+            break
+        for path in satisfied:
+            allocation[path] = pending.pop(path)
+            remaining -= allocation[path]
+    return allocation
+
+
+def compact_memory_contents(
+    contents: dict[str, str], sources: Sequence[str], budget: int
+) -> dict[str, str]:
+    """Trim loaded memory to `budget` characters total, marking what was elided."""
+    present = [path for path in sources if contents.get(path) is not None]
+    allocation = _allocate({path: len(contents[path]) for path in present}, budget)
+    compacted: dict[str, str] = {}
+    for index, path in enumerate(present):
+        raw = contents[path]
+        allowance = allocation[path]
+        if len(raw) <= allowance:
+            compacted[path] = raw
+            continue
+        # The first source holds the durable instructions, which lead the file;
+        # later sources are append-only logs whose newest entries are at the end.
+        from_end = index > 0
+        reserve = len(
+            MEMORY_TRUNCATION_NOTICE.format(
+                elided=len(raw), total=len(raw), path=path, budget=budget
+            )
+        )
+        kept = _keep_lines(raw, allowance - reserve - 1, from_end=from_end)
+        notice = MEMORY_TRUNCATION_NOTICE.format(
+            elided=len(raw) - len(kept), total=len(raw), path=path, budget=budget
+        )
+        compacted[path] = f"{notice}\n{kept}" if from_end else f"{kept}\n{notice}"
+        logger.warning(
+            "Memory source %s truncated from %d to %d characters (%d-character "
+            "budget); the agent must grep/read_file for the rest.",
+            path,
+            len(raw),
+            len(kept),
+            budget,
+        )
+    return compacted
+
+
+def check_memory_corpus(
+    backend: Any, sources: Sequence[str], budget: int, *, strict: bool = False
+) -> int:
+    """Log the mounted memory size and flag (or raise on) a corpus over `budget`."""
+    responses = _safe_hub_call(backend.download_files, list(sources))
+    if isinstance(responses, _FailedHubCall):
+        logger.warning(
+            "Could not measure the memory corpus (%s); skipping the budget check.",
+            responses.error,
+        )
+        return 0
+    sizes = {
+        path: len(response.content.decode("utf-8"))
+        for path, response in zip(sources, responses, strict=True)
+        if response.content is not None
+    }
+    total = sum(sizes.values())
+    if total > budget:
+        message = (
+            f"Memory corpus is {total} characters, over the {budget}-character "
+            f"budget ({sizes}); it is truncated into the prompt on every model "
+            "turn. Compact /memory/ (summarize and prune scorecard.md, trim "
+            "AGENTS.md to durable instructions) or raise "
+            "AMBIENT_ANALYST_MEMORY_CHAR_BUDGET."
+        )
+        if strict:
+            raise MemoryBudgetExceededError(message)
+        logger.error(message)
+    else:
+        logger.info("Memory corpus is %d/%d characters (%s).", total, budget, sizes)
+    return total
+
+
+class BudgetedMemoryMiddleware(MemoryMiddleware):
+    """`MemoryMiddleware` that caps the injected memory block at `char_budget` characters."""
+
+    def __init__(self, *, char_budget: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.char_budget = char_budget
+
+    def before_agent(self, state: Any, runtime: Any, config: Any) -> dict[str, Any] | None:
+        """Load memory, then compact it to the budget before it can reach the prompt."""
+        return self._compact_update(super().before_agent(state, runtime, config))
+
+    async def abefore_agent(self, state: Any, runtime: Any, config: Any) -> dict[str, Any] | None:
+        """Async variant of `before_agent`."""
+        return self._compact_update(await super().abefore_agent(state, runtime, config))
+
+    def _compact_update(self, update: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not update or "memory_contents" not in update:
+            return update
+        return {
+            **update,
+            "memory_contents": compact_memory_contents(
+                update["memory_contents"], self.sources, self.char_budget
+            ),
+        }
+
+
 if __name__ == "__main__":
     events = _parse_events(
         '{"topic":"rates","event_kind":"preference"}\n{"topic":"rates"}'
@@ -257,4 +407,49 @@ if __name__ == "__main__":
     search_request = SimpleNamespace(tool_call={"name": "tavily_search", "args": {"q": "cpi"}})
     assert hot_path.wrap_tool_call(search_request, lambda _r: "search-result") == "search-result"
     SemanticPreferenceMiddleware()._record_preferences("I prefer concise answers.")
+
+    budget = 4000
+    sources = ["/memory/AGENTS.md", "/memory/scorecard.md"]
+    corpus = {
+        "/memory/AGENTS.md": "".join(f"instruction {i}\n" for i in range(1000)),
+        "/memory/scorecard.md": "".join(f"| model {i} | score |\n" for i in range(1000)),
+    }
+    compacted = compact_memory_contents(corpus, sources, budget)
+    assert sum(len(v) for v in compacted.values()) <= budget
+    assert compacted["/memory/AGENTS.md"].startswith("instruction 0\n")
+    assert compacted["/memory/scorecard.md"].rstrip().endswith("| model 999 | score |")
+    assert all("MEMORY TRUNCATED" in value for value in compacted.values())
+    assert all("`grep` and `read_file`" in value for value in compacted.values())
+    small = {"/memory/AGENTS.md": "short\n", "/memory/scorecard.md": "also short\n"}
+    assert compact_memory_contents(small, sources, budget) == small
+
+    class Corpus:
+        def download_files(self, paths):
+            return [
+                SimpleNamespace(content=corpus[path].encode("utf-8"), error=None)
+                for path in paths
+            ]
+
+    class CorpusDown:
+        def download_files(self, paths):
+            raise RuntimeError("Context Hub unavailable")
+
+    assert check_memory_corpus(Corpus(), sources, budget) == sum(
+        len(v) for v in corpus.values()
+    )
+    assert check_memory_corpus(Corpus(), sources, 10**9) > 0
+    assert check_memory_corpus(CorpusDown(), sources, budget) == 0
+    try:
+        check_memory_corpus(Corpus(), sources, budget, strict=True)
+    except MemoryBudgetExceededError:
+        pass
+    else:
+        raise AssertionError("strict check_memory_corpus must raise when over budget")
+
+    budgeted = BudgetedMemoryMiddleware(
+        backend=Corpus(), sources=sources, char_budget=budget
+    )
+    update = budgeted._compact_update({"memory_contents": dict(corpus)})
+    assert sum(len(v) for v in update["memory_contents"].values()) <= budget
+    assert budgeted._compact_update(None) is None
     print("ok")

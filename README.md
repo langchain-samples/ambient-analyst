@@ -33,7 +33,11 @@ implications. LLM research and model evaluation remain a specialist capability.
 - **Long-term memory** — `AGENTS.md` (standing context + learnings) and
   `scorecard.md` (ranked best-models-per-category, with scores, sources, dates,
   and caveats), in the Context Hub agent repo `ambient-analyst-memory`. Loaded into
-  context every run.
+  context every run, capped at `AMBIENT_ANALYST_MEMORY_CHAR_BUDGET` characters
+  (40K by default) because the memory block is re-sent with the system prompt on
+  every model turn; whatever the cap elides stays reachable through `grep` and
+  `read_file` on `/memory/`, and a startup check reports a corpus that has
+  outgrown the budget (`AMBIENT_ANALYST_MEMORY_STRICT=1` makes it fatal).
 - **Hot-path memory** — `SemanticPreferenceMiddleware` extracts explicit user
   preferences with regex, and `HotPathMemoryMiddleware` appends selected
   completed tool-call events. Both write to `/memory/hot-path-events.jsonl`
