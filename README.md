@@ -33,7 +33,18 @@ implications. LLM research and model evaluation remain a specialist capability.
 - **Long-term memory** — `AGENTS.md` (standing context + learnings) and
   `scorecard.md` (ranked best-models-per-category, with scores, sources, dates,
   and caveats), in the Context Hub agent repo `ambient-analyst-memory`. Loaded into
-  context every run.
+  context every run, capped at `AMBIENT_ANALYST_MEMORY_CHAR_BUDGET` characters
+  (40K by default) because the memory block is re-sent with the system prompt on
+  every model turn; whatever the cap elides stays reachable through `grep` and
+  `read_file` on `/memory/`, and a startup check reports a corpus that has
+  outgrown the budget (`AMBIENT_ANALYST_MEMORY_STRICT=1` makes it fatal).
+- **Hot-path memory** — `SemanticPreferenceMiddleware` extracts explicit user
+  preferences with regex, and `HotPathMemoryMiddleware` appends selected
+  completed tool-call events. Both write to `/memory/hot-path-events.jsonl`
+  during the current run.
+- **Cold-path memory** — `memory-consolidator` reviews repeated hot-path events
+  later and promotes durable patterns into `/memory/cold-path-memory.md` rather
+  than rewriting broad memory summaries on every request.
 - **System prompt** — pulled from the **LangSmith Prompt Hub** prompt
   `ambient-analyst-prompt` at startup (its system message), not hard-coded.
 - **Continuous learning** — the agent updates memory and the scorecard with its
@@ -55,9 +66,10 @@ to drift out of date. At construction the agent pulls the **Prompt Hub** prompt
 staging the skills locally so a `CompositeBackend` can serve them:
 
 ```
-/skills/   ─▶ FilesystemBackend(temp dir, virtual_mode=True)  # skill repos pulled at startup (progressive disclosure)
-/memory/   ─▶ ContextHubBackend("ambient-analyst-memory")        # AGENTS.md + scorecard.md (agent-written, persistent)
-everything else ─▶ StateBackend()                             # ephemeral scratch (todos, working notes)
+/skills/   -> FilesystemBackend(temp dir, virtual_mode=True)  # skill repos pulled at startup (progressive disclosure)
+/memory/   -> ContextHubBackend("ambient-analyst-memory")     # AGENTS.md, scorecard, hot/cold memory files
+/analysis/ -> LangSmithSandbox                                # datasets, calculations, charts, artifacts
+everything else -> StateBackend()                             # ephemeral scratch (todos, working notes)
 ```
 
 Skills and the prompt are pulled at startup (curated, stable — edit them in
@@ -70,14 +82,24 @@ live in (then it resolves its own tenant — no `LANGSMITH_WORKSPACE_ID` needed)
 The agent exercises the full DeepAgents toolkit — these are what
 the [frontend visualizer](#frontend-capability-visualizer) is built to show off:
 
+- **Context-engineered memory paths** — short-term scratch lives in graph state,
+  durable memory lives under `/memory/`, cheap events are captured on the hot
+  path by middleware, and repeated patterns are consolidated on the cold path by
+  a narrow subagent.
+- **Interpreters as context compressors** — `run_context_interpreter` uses code to
+  count and summarize event JSON before the LLM judges what should become memory.
+  `CodeInterpreterMiddleware` remains available for workflow-style fan-out and
+  analysis code.
 - **Dynamic subagents** — with `CodeInterpreterMiddleware` (`langchain-quickjs`),
   phrasing a request as a **"workflow"** lets the agent dispatch subagents from
   interpreter code (loops, parallel fan-out) rather than one tool call at a time.
   `macro-analysis-worker` can analyze sources, companies, industries, countries,
-  indicators, or scenarios in parallel.
+  indicators, or scenarios in parallel. `memory-consolidator` handles cold-path
+  memory reflection in an isolated context.
 - **Middleware** — a custom stack (PII redaction, a recursion floor, and a step
-  budget that forces a clean final answer near the turn limit) plus the built-in
-  planning (todos) and code-interpreter middleware.
+  budget that forces a clean final answer near the turn limit, semantic
+  preference extraction, and hot-path tool-call memory) plus the built-in planning
+  (todos) and code-interpreter middleware.
 - **Sandbox** — a LangSmith managed sandbox mounted at `/analysis/` (via
   `CompositeBackend`) for calculations, datasets, charts, and artifacts.
 

@@ -11,7 +11,8 @@ dependencies = [
     "langchain-quickjs>=0.2.0",
     "langchain-tavily>=0.2.18",
     "langgraph-cli[inmem]>=0.4.27",
-    "langsmith[sandbox]>=0.8.0",
+    "langsmith[livekit,sandbox]>=0.10.4",
+    "livekit-agents[langchain,openai,silero,turn-detector]~=1.5",
     "openevals>=0.2.0",
 ]
 
@@ -19,10 +20,10 @@ dependencies = [
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-# Only the agent package is installable. Without this, setuptools' flat-layout
-# auto-discovery sees both `ambient_analyst` and `evals` as top-level packages
-# and aborts ("Multiple top-level packages discovered"), failing the deploy
-# build. `namespaces = true` keeps discovery working without `__init__.py` files.
+[tool.setuptools.package-dir]
+"" = "src"
+
 [tool.setuptools.packages.find]
-include = ["ambient_analyst*"]
+where = ["src"]
+include = ["agent*"]
 namespaces = true

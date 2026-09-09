@@ -3,7 +3,7 @@
 import { useAmbientSpecialist, msgRole } from "@/lib/stream";
 import { Panel } from "./Panel";
 
-// The agent's middleware stack (see ambient_analyst/agent.py). Middleware is
+// The agent's middleware stack (see src/agent/agent.py). Middleware is
 // cross-cutting and has no single stream projection, so this shows the stack +
 // the live effects we can observe (turn budget, planning activity).
 const STACK = [

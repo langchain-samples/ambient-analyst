@@ -1,4 +1,10 @@
 .env
+.env.*
+*.pem
+*.key
+*.crt
+credentials.json
+node_modules/
 __pycache__/
 *.pyc
 .venv/
@@ -6,6 +12,8 @@ venv/
 .python-version
 .langgraph_api
 .claude
+evals/jobs/
+.DS_Store
 
 # Python build artifacts
 build/
