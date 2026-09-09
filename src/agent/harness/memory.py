@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import re
 from typing import Any
 
@@ -16,8 +18,11 @@ from langchain_core.tools import tool
 from agent.harness.context import MEMORY_REPO
 from agent.harness.pii import redact
 
+logger = logging.getLogger(__name__)
+
 MEMORY_EVENTS_FILE = "hot-path-events.jsonl"
 MEMORY_EVENTS_PATH = f"/memory/{MEMORY_EVENTS_FILE}"
+MEMORY_EVENTS_MAX_LINES = 500
 COLD_MEMORY_PATH = "/memory/cold-path-memory.md"
 _PREFERENCE_PATTERNS = [
     re.compile(r"\bremember that (?P<preference>[^\n]+?)(?:[.!?](?:\s|$)|$)", re.I),
@@ -30,15 +35,40 @@ _PREFERENCE_PATTERNS = [
 ]
 
 
+@dataclass
+class _FailedHubCall:
+    """Stand-in result for a Hub call that raised instead of returning one."""
+
+    error: str
+    file_data: None = None
+
+
+def _safe_hub_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run a Hub call, converting a raised transport error into a result object."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — memory bookkeeping is never fatal
+        return _FailedHubCall(error=f"{type(exc).__name__}: {exc}")
+
+
 def _append_memory_event(event: dict[str, Any]) -> str | None:
-    backend = ContextHubBackend(MEMORY_REPO)
-    previous = backend.read(MEMORY_EVENTS_FILE)
+    """Append one event to the bounded hot-path log, returning any error text."""
+    backend = _safe_hub_call(ContextHubBackend, MEMORY_REPO)
+    if isinstance(backend, _FailedHubCall):
+        return backend.error
+    previous = _safe_hub_call(backend.read, MEMORY_EVENTS_FILE)
+    if isinstance(previous, _FailedHubCall):
+        # Writing on an unreadable log would replace the whole history with one event.
+        return previous.error
     content = "" if previous.error or previous.file_data is None else previous.file_data.content
-    # ponytail: full-file rewrite is fine for demos; use DB append for concurrent writers.
-    result = backend.write(
-        MEMORY_EVENTS_FILE,
-        content + json.dumps(event, sort_keys=True) + "\n",
-    )
+    # Bounded-tail stopgap: the full-file rewrite pushes the entire log on every
+    # call, so keep only the newest events. An append-only store (DB or a Hub
+    # append API) is the real fix and also handles concurrent writers.
+    lines = [line for line in content.splitlines() if line.strip()][
+        -(MEMORY_EVENTS_MAX_LINES - 1) :
+    ]
+    lines.append(json.dumps(event, sort_keys=True))
+    result = _safe_hub_call(backend.write, MEMORY_EVENTS_FILE, "\n".join(lines) + "\n")
     return result.error
 
 
@@ -112,7 +142,9 @@ class HotPathMemoryMiddleware(AgentMiddleware):
         name = request.tool_call.get("name")
         if name not in self.tool_names:
             return
-        _append_memory_event(
+        # Runs after the wrapped tool succeeded, so a failed append must not
+        # discard that result.
+        error = _append_memory_event(
             {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "event_kind": "tool_call_completed",
@@ -124,6 +156,12 @@ class HotPathMemoryMiddleware(AgentMiddleware):
                 "status": getattr(result, "status", "success"),
             }
         )
+        if error:
+            logger.warning(
+                "Hot-path memory append for %r failed (%s); keeping the tool result.",
+                name,
+                error,
+            )
 
     def wrap_tool_call(self, request: Any, handler: Any) -> Any:
         result = handler(request)
@@ -147,7 +185,7 @@ class SemanticPreferenceMiddleware(AgentMiddleware):
 
     def _record_preferences(self, text: str) -> None:
         for preference in _extract_preferences(text):
-            _append_memory_event(
+            error = _append_memory_event(
                 {
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "event_kind": "preference_extracted",
@@ -158,6 +196,10 @@ class SemanticPreferenceMiddleware(AgentMiddleware):
                     "confidence": "high",
                 }
             )
+            if error:
+                logger.warning(
+                    "Preference memory append failed (%s); continuing the run.", error
+                )
 
 
 if __name__ == "__main__":
@@ -173,4 +215,46 @@ if __name__ == "__main__":
     assert "[REDACTED_EMAIL]" in _extract_preferences(
         "Remember that my email is me@example.com."
     )[0]
+
+    from types import SimpleNamespace
+
+    seed = "".join(
+        json.dumps({"i": i}, sort_keys=True) + "\n" for i in range(MEMORY_EVENTS_MAX_LINES + 50)
+    )
+
+    class HubDown:
+        def __init__(self, identifier: str) -> None:
+            self.identifier = identifier
+
+        def read(self, *args, **kwargs):
+            raise RuntimeError("Expecting value: line 1 column 1 (char 0)")
+
+        def write(self, *args, **kwargs):
+            raise RuntimeError("Expecting value: line 1 column 1 (char 0)")
+
+    captured: list[str] = []
+
+    class HubCapture:
+        def __init__(self, identifier: str) -> None:
+            self.identifier = identifier
+
+        def read(self, *args, **kwargs):
+            return SimpleNamespace(error=None, file_data=SimpleNamespace(content=seed))
+
+        def write(self, file_path: str, content: str):
+            captured.append(content)
+            return SimpleNamespace(error=None)
+
+    ContextHubBackend = HubCapture
+    assert _append_memory_event({"i": "newest"}) is None
+    written_lines = captured[-1].splitlines()
+    assert len(written_lines) == MEMORY_EVENTS_MAX_LINES, len(written_lines)
+    assert json.loads(written_lines[-1]) == {"i": "newest"}
+
+    ContextHubBackend = HubDown
+    assert "Expecting value" in (_append_memory_event({"i": "dropped"}) or "")
+    hot_path = HotPathMemoryMiddleware({"tavily_search"})
+    search_request = SimpleNamespace(tool_call={"name": "tavily_search", "args": {"q": "cpi"}})
+    assert hot_path.wrap_tool_call(search_request, lambda _r: "search-result") == "search-result"
+    SemanticPreferenceMiddleware()._record_preferences("I prefer concise answers.")
     print("ok")

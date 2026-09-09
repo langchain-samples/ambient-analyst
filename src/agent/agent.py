@@ -40,6 +40,7 @@ from langsmith.sandbox import SandboxClient
 
 from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
 from agent.harness.context import MEMORY_REPO, SKILL_HANDLES, prompt_identifier
+from agent.harness.hub import ResilientHubBackend
 from agent.harness.memory import (
     COLD_MEMORY_PATH,
     HotPathMemoryMiddleware,
@@ -153,7 +154,7 @@ backend = CompositeBackend(
     default=StateBackend(),
     routes={
         "/skills/": skills_backend,
-        "/memory/": ContextHubBackend(MEMORY_REPO),
+        "/memory/": ResilientHubBackend(ContextHubBackend(MEMORY_REPO), max_retries=3),
         **sandbox_routes,
     },
 )
