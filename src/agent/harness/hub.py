@@ -38,6 +38,13 @@ def _is_retryable(exc: BaseException) -> bool:
     return False
 
 
+def _is_retryable_result(result: Any) -> bool:
+    error = getattr(result, "error", None)
+    return isinstance(error, str) and any(
+        marker in error.lower() for marker in _RETRYABLE_MARKERS
+    )
+
+
 class ResilientHubBackend:
     """Wraps a Context Hub backend so failed pushes come back as result errors."""
 
@@ -61,12 +68,14 @@ class ResilientHubBackend:
         message = ""
         for attempt in range(1, self.max_retries + 1):
             try:
-                return fn(*args, **kwargs)
+                result = fn(*args, **kwargs)
+                if attempt >= self.max_retries or not _is_retryable_result(result):
+                    return result
             except Exception as exc:  # noqa: BLE001 — a Hub outage must not end the run
                 message = f"{type(exc).__name__}: {exc}"
                 if attempt >= self.max_retries or not _is_retryable(exc):
                     break
-                time.sleep(BACKOFF_SECONDS * attempt)
+            time.sleep(BACKOFF_SECONDS * attempt)
         return self._failure(operation, message, result_type)
 
     async def _acall(self, operation: str, result_type: type, *args: Any, **kwargs: Any) -> Any:
@@ -74,12 +83,14 @@ class ResilientHubBackend:
         message = ""
         for attempt in range(1, self.max_retries + 1):
             try:
-                return await fn(*args, **kwargs)
+                result = await fn(*args, **kwargs)
+                if attempt >= self.max_retries or not _is_retryable_result(result):
+                    return result
             except Exception as exc:  # noqa: BLE001 — a Hub outage must not end the run
                 message = f"{type(exc).__name__}: {exc}"
                 if attempt >= self.max_retries or not _is_retryable(exc):
                     break
-                await asyncio.sleep(BACKOFF_SECONDS * attempt)
+            await asyncio.sleep(BACKOFF_SECONDS * attempt)
         return self._failure(operation, message, result_type)
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
