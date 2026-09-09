@@ -1,10 +1,11 @@
-"""Tests for the Context Hub memory conflict-retry backend."""
+"""Tests for Context Hub retry behavior."""
 
 from __future__ import annotations
 
 from deepagents.backends.protocol import EditResult, WriteResult
 
-from llm_research_agent.utils.memory import ConflictRetryBackend, _is_conflict
+from agent.harness import hub
+from agent.harness.hub import ResilientHubBackend
 
 _CONFLICT_ERROR = (
     "Hub unavailable: Conflict (parent commit does not match latest)"
@@ -32,9 +33,10 @@ class _FakeHubBackend:
         return WriteResult(path=file_path)
 
 
-def test_edit_retries_on_conflict_then_succeeds():
+def test_edit_retries_on_conflict_then_succeeds(monkeypatch):
+    monkeypatch.setattr(hub, "BACKOFF_SECONDS", 0)
     inner = _FakeHubBackend(fail_times=1)
-    backend = ConflictRetryBackend(inner, max_retries=3, backoff=0)
+    backend = ResilientHubBackend(inner, max_retries=3)
 
     result = backend.edit("/memory/AGENTS.md", "old", "new")
 
@@ -43,9 +45,10 @@ def test_edit_retries_on_conflict_then_succeeds():
     assert inner.edit_calls == 2
 
 
-def test_write_retries_on_conflict_then_succeeds():
+def test_write_retries_on_conflict_then_succeeds(monkeypatch):
+    monkeypatch.setattr(hub, "BACKOFF_SECONDS", 0)
     inner = _FakeHubBackend(fail_times=1)
-    backend = ConflictRetryBackend(inner, max_retries=3, backoff=0)
+    backend = ResilientHubBackend(inner, max_retries=3)
 
     result = backend.write("/memory/AGENTS.md", "content")
 
@@ -53,9 +56,10 @@ def test_write_retries_on_conflict_then_succeeds():
     assert inner.write_calls == 2
 
 
-def test_edit_gives_up_after_max_retries():
+def test_edit_gives_up_after_max_retries(monkeypatch):
+    monkeypatch.setattr(hub, "BACKOFF_SECONDS", 0)
     inner = _FakeHubBackend(fail_times=99)
-    backend = ConflictRetryBackend(inner, max_retries=3, backoff=0)
+    backend = ResilientHubBackend(inner, max_retries=3)
 
     result = backend.edit("/memory/AGENTS.md", "old", "new")
 
@@ -73,7 +77,7 @@ def test_non_conflict_error_is_not_retried():
             return EditResult(error="Error: File '/memory/AGENTS.md' not found")
 
     inner = _AlwaysMissing()
-    backend = ConflictRetryBackend(inner, max_retries=3, backoff=0)
+    backend = ResilientHubBackend(inner, max_retries=3)
 
     result = backend.edit("/memory/AGENTS.md", "old", "new")
 
@@ -81,8 +85,8 @@ def test_non_conflict_error_is_not_retried():
     assert inner.edit_calls == 1
 
 
-def test_is_conflict_markers():
-    assert _is_conflict("Hub unavailable: Conflict (parent commit does not match latest)")
-    assert _is_conflict("HTTP 409")
-    assert not _is_conflict("Error: File not found")
-    assert not _is_conflict(None)
+def test_retryable_result_markers():
+    assert hub._is_retryable_result(EditResult(error=_CONFLICT_ERROR))
+    assert hub._is_retryable_result(WriteResult(error="HTTP 409"))
+    assert not hub._is_retryable_result(EditResult(error="Error: File not found"))
+    assert not hub._is_retryable_result(EditResult())
