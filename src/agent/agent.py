@@ -25,6 +25,7 @@ import logging
 import os
 import pathlib
 import tempfile
+import warnings
 from typing import TYPE_CHECKING
 
 from deepagents import create_deep_agent
@@ -35,6 +36,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from langchain.chat_models import init_chat_model
 from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_core._api import LangChainBetaWarning
 from langchain_core.runnables import RunnableConfig
 from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
@@ -66,6 +68,11 @@ dotenv.load_dotenv(override=True)
 
 
 logger = logging.getLogger(__name__)
+warnings.filterwarnings(
+    "ignore",
+    category=LangChainBetaWarning,
+    message=r"The class `CodeInterpreterMiddleware` is in beta\..*",
+)
 
 tavily_search = TavilySearch(max_results=5)
 tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
@@ -79,6 +86,24 @@ DEFAULT_TOOLS = [
     tavily_extract,
     run_context_interpreter,
 ]
+
+
+def _required(component: str, fn):
+    try:
+        return fn()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to initialize {component}: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise ValueError(f"missing {name}")
+    return value
+
+
 PROMPT_NAME = os.environ.get("AMBIENT_ANALYST_PROMPT_NAME", "ambient-analyst-prompt")
 
 # Stable sandbox for analysis artifacts.
@@ -105,10 +130,13 @@ RECURSION_LIMIT = 75
 MAX_MODEL_TURNS = 25
 
 client = Client()
-DEFAULT_SYSTEM_PROMPT = client.pull_prompt(
-    prompt_identifier(client),
-    dangerously_pull_public_prompt=True,
-).messages[0].prompt.template
+DEFAULT_SYSTEM_PROMPT = _required(
+    "prompt",
+    lambda: client.pull_prompt(
+        prompt_identifier(client),
+        dangerously_pull_public_prompt=True,
+    ).messages[0].prompt.template,
+)
 
 # The system prompt and tool selection come from the assistant's config (see
 # utils/assistants.py); `build_agent` takes them as arguments and the `make_agent`
@@ -123,7 +151,12 @@ skills_root = pathlib.Path(tempfile.mkdtemp(prefix="ambient_analyst_skills_"))
 for handle in SKILL_HANDLES:
     skill_md = skills_root / handle / "SKILL.md"
     skill_md.parent.mkdir(parents=True)
-    skill_md.write_text(client.pull_skill(handle).files["SKILL.md"].content)
+    skill_md.write_text(
+        _required(
+            f"skill {handle}",
+            lambda handle=handle: client.pull_skill(handle).files["SKILL.md"].content,
+        )
+    )
 skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 
 # Default agent model — exported so the eval suite can record it in experiment
@@ -131,12 +164,15 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-5.6-luna"
 
-model = init_chat_model(
-    model=DEFAULT_MODEL,
-    model_provider=DEFAULT_PROVIDER,
-    base_url="https://gateway.smith.langchain.com/openai",
-    api_key=os.getenv("LC_GATEWAY_KEY"),
-    reasoning_effort="none",
+model = _required(
+    "model",
+    lambda: init_chat_model(
+        model=DEFAULT_MODEL,
+        model_provider=DEFAULT_PROVIDER,
+        base_url="https://gateway.smith.langchain.com/openai",
+        api_key=_required_env("LC_GATEWAY_KEY"),
+        reasoning_effort="none",
+    ),
 )
 
 # Mount a persistent analysis environment. Create it on first startup and reuse
@@ -144,16 +180,21 @@ model = init_chat_model(
 sandbox_routes = {}
 try:
     sandbox_client = SandboxClient()
-    existing = [
-        item
-        for item in sandbox_client.list_sandboxes()
-        if getattr(item, "name", None) == SANDBOX_NAME
-    ]
-    sandbox = (
-        existing[0]
-        if existing
-        else sandbox_client.create_sandbox(name=SANDBOX_NAME)
+    sandbox = next(
+        (
+            item
+            for item in sandbox_client.list_sandboxes()
+            if getattr(item, "name", None) == SANDBOX_NAME
+        ),
+        None,
     )
+    if sandbox is None:
+        try:
+            sandbox = sandbox_client.create_sandbox(name=SANDBOX_NAME)
+        except Exception as exc:
+            if "already exists" not in str(exc) and "409" not in str(exc):
+                raise
+            sandbox = sandbox_client.start_sandbox(SANDBOX_NAME)
     if sandbox.status != "ready":
         sandbox = sandbox_client.start_sandbox(SANDBOX_NAME)
     sandbox_routes["/analysis/"] = LangSmithSandbox(sandbox)
@@ -163,6 +204,7 @@ except Exception as exc:  # noqa: BLE001 — sandbox is optional at startup
         SANDBOX_NAME,
         exc,
     )
+ANALYSIS_SANDBOX_MOUNTED = "/analysis/" in sandbox_routes
 
 # Scratch files stay ephemeral in state; /skills serves the pulled skill repos;
 # /memory persists to the LangSmith Context Hub; /analysis/ is the managed
@@ -280,7 +322,7 @@ def _chat_model_from_config(config: RunnableConfig):
         model=model_name,
         model_provider=provider,
         base_url=f"https://gateway.smith.langchain.com/{provider}",
-        api_key=os.getenv("LC_GATEWAY_KEY"),
+        api_key=_required_env("LC_GATEWAY_KEY"),
         reasoning_effort="none" if provider == "openai" else None,
     )
 

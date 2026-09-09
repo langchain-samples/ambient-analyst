@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -97,23 +97,24 @@ def _scrub_content(content: str | list, retrieved: set[str], evidence: str) -> s
     return content
 
 
+def _citation_evidence(messages: list[BaseMessage]) -> tuple[set[str], str]:
+    """Return the URLs and raw tool evidence visible in this model request."""
+    evidence: list[str] = []
+    retrieved: set[str] = set()
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            body = _text(message.content)
+            evidence.append(unquote(body).lower())
+            retrieved.update(_normalize(u) for u in _URL_RE.findall(body))
+    return retrieved, "\n".join(evidence)
+
+
 class CitationGuardMiddleware(AgentMiddleware):
     """Relabel final-answer citations whose URLs were never retrieved this session."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._retrieved: set[str] = set()
-        self._evidence: list[str] = []
-
-    def _observe(self, request: ModelRequest) -> None:
-        """Accumulate the URLs and raw text of every tool result in the history."""
-        for message in request.messages:
-            if isinstance(message, ToolMessage):
-                body = _text(message.content)
-                self._evidence.append(unquote(body).lower())
-                self._retrieved.update(_normalize(u) for u in _URL_RE.findall(body))
-
-    def _scrub(self, response: ModelResponse) -> ModelResponse:
+    def _scrub(
+        self, response: ModelResponse, retrieved: set[str], evidence: str
+    ) -> ModelResponse:
         """Rewrite ungrounded URLs in the final (tool-call-free) AI message."""
         messages = getattr(response, "result", None) or []
         if not messages or not isinstance(messages[-1], AIMessage):
@@ -121,7 +122,7 @@ class CitationGuardMiddleware(AgentMiddleware):
         final = messages[-1]
         if final.tool_calls:
             return response
-        scrubbed = _scrub_content(final.content, self._retrieved, "\n".join(self._evidence))
+        scrubbed = _scrub_content(final.content, retrieved, evidence)
         if scrubbed == final.content:
             return response
         messages[-1] = final.model_copy(update={"content": scrubbed})
@@ -132,16 +133,16 @@ class CitationGuardMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        self._observe(request)
-        return self._scrub(handler(request))
+        retrieved, evidence = _citation_evidence(request.messages)
+        return self._scrub(handler(request), retrieved, evidence)
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        self._observe(request)
-        return self._scrub(await handler(request))
+        retrieved, evidence = _citation_evidence(request.messages)
+        return self._scrub(await handler(request), retrieved, evidence)
 
 
 if __name__ == "__main__":
@@ -152,21 +153,18 @@ if __name__ == "__main__":
     redacted = "https://data.example.gov/series/[REDACTED_PHONE]"
 
     guard = CitationGuardMiddleware()
-    guard._observe(
-        SimpleNamespace(
-            messages=[
-                ToolMessage(content=f"Search hit: {real} — trade grew 3.1%.", tool_call_id="1"),
-                ToolMessage(
-                    content=[{"type": "text", "text": f"Series page {redacted}"}],
-                    tool_call_id="2",
-                ),
-            ]
-        )
+    retrieved, evidence = _citation_evidence(
+        [
+            ToolMessage(content=f"Search hit: {real} — trade grew 3.1%.", tool_call_id="1"),
+            ToolMessage(
+                content=[{"type": "text", "text": f"Series page {redacted}"}],
+                tool_call_id="2",
+            ),
+        ]
     )
-
     answer = f"Trade grew 3.1% ([source]({real})) and tariffs fell ([source]({fake})). Series: {redacted}"
     response = SimpleNamespace(result=[AIMessage(content=answer)])
-    guard._scrub(response)
+    guard._scrub(response, retrieved, evidence)
     out = response.result[-1].content
 
     assert real in out, out
@@ -180,7 +178,13 @@ if __name__ == "__main__":
         tool_calls=[{"name": "search", "args": {"q": "trade"}, "id": "3"}],
     )
     midresponse = SimpleNamespace(result=[mid])
-    guard._scrub(midresponse)
+    guard._scrub(midresponse, retrieved, evidence)
     assert midresponse.result[-1].content == f"Checking {fake}"
+
+    def _answer(_request):
+        return SimpleNamespace(result=[AIMessage(content=f"Leaked? {real}")])
+
+    clean = guard.wrap_model_call(SimpleNamespace(messages=[]), _answer)
+    assert real not in clean.result[-1].content, clean.result[-1].content
 
     print("citation guard self-test passed")

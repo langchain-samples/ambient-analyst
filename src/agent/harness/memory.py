@@ -7,8 +7,7 @@ to. `BudgetedMemoryMiddleware` bounds that cost; `check_memory_corpus` reports
 growth past the budget at startup.
 """
 
-from __future__ import annotations
-
+import asyncio
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -22,9 +21,12 @@ from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.middleware.memory import MemoryMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from langgraph.config import get_config
 
 from agent.harness.context import MEMORY_REPO
+from agent.harness.hub import hub_result_content, hub_result_value
 from agent.harness.pii import redact
 
 logger = logging.getLogger(__name__)
@@ -78,7 +80,12 @@ def _append_memory_event(event: dict[str, Any]) -> str | None:
     if isinstance(previous, _FailedHubCall):
         # Writing on an unreadable log would replace the whole history with one event.
         return previous.error
-    content = "" if previous.error or previous.file_data is None else previous.file_data.content
+    file_data = hub_result_value(previous, "file_data")
+    content = (
+        ""
+        if hub_result_value(previous, "error") or file_data is None
+        else hub_result_content(file_data)
+    )
     # Bounded-tail stopgap: the full-file rewrite pushes the entire log on every
     # call, so keep only the newest events. An append-only store (DB or a Hub
     # append API) is the real fix and also handles concurrent writers.
@@ -87,7 +94,7 @@ def _append_memory_event(event: dict[str, Any]) -> str | None:
     ]
     lines.append(json.dumps(event, sort_keys=True))
     result = _safe_hub_call(backend.write, MEMORY_EVENTS_FILE, "\n".join(lines) + "\n")
-    return result.error
+    return hub_result_value(result, "error")
 
 
 def _latest_human_text(state: Any) -> str:
@@ -188,7 +195,7 @@ class HotPathMemoryMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         result = await handler(request)
-        self._record(request, result)
+        await asyncio.to_thread(self._record, request, result)
         return result
 
 
@@ -229,7 +236,7 @@ class SemanticPreferenceMiddleware(AgentMiddleware):
         self._record_preferences(_latest_human_text(state))
 
     async def abefore_agent(self, state: Any, runtime: Any) -> None:
-        self._record_preferences(_latest_human_text(state))
+        await asyncio.to_thread(self._record_preferences, _latest_human_text(state))
 
     def _record_preferences(self, text: str) -> None:
         for preference in _extract_preferences(text):
@@ -314,7 +321,7 @@ def compact_memory_contents(
             elided=len(raw) - len(kept), total=len(raw), path=path, budget=budget
         )
         compacted[path] = f"{notice}\n{kept}" if from_end else f"{kept}\n{notice}"
-        logger.warning(
+        logger.info(
             "Memory source %s truncated from %d to %d characters (%d-character "
             "budget); the agent must grep/read_file for the rest.",
             path,
@@ -337,9 +344,9 @@ def check_memory_corpus(
         )
         return 0
     sizes = {
-        path: len(response.content.decode("utf-8"))
+        path: len(hub_result_content(response))
         for path, response in zip(sources, responses, strict=True)
-        if response.content is not None
+        if hub_result_value(response, "content") is not None
     }
     total = sum(sizes.values())
     if total > budget:
@@ -352,7 +359,7 @@ def check_memory_corpus(
         )
         if strict:
             raise MemoryBudgetExceededError(message)
-        logger.error(message)
+        logger.info(message)
     else:
         logger.info("Memory corpus is %d/%d characters (%s).", total, budget, sizes)
     return total
@@ -365,12 +372,20 @@ class BudgetedMemoryMiddleware(MemoryMiddleware):
         super().__init__(**kwargs)
         self.char_budget = char_budget
 
-    def before_agent(self, state: Any, runtime: Any, config: Any) -> dict[str, Any] | None:
+    def before_agent(
+        self, state: Any, runtime: Any, config: RunnableConfig | None = None
+    ) -> dict[str, Any] | None:
         """Load memory, then compact it to the budget before it can reach the prompt."""
+        if config is None:
+            config = get_config()
         return self._compact_update(super().before_agent(state, runtime, config))
 
-    async def abefore_agent(self, state: Any, runtime: Any, config: Any) -> dict[str, Any] | None:
+    async def abefore_agent(
+        self, state: Any, runtime: Any, config: RunnableConfig | None = None
+    ) -> dict[str, Any] | None:
         """Async variant of `before_agent`."""
+        if config is None:
+            config = get_config()
         return self._compact_update(await super().abefore_agent(state, runtime, config))
 
     def _compact_update(self, update: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -462,6 +477,9 @@ if __name__ == "__main__":
                 for path in paths
             ]
 
+        async def adownload_files(self, paths):
+            return self.download_files(paths)
+
     class CorpusDown:
         def download_files(self, paths):
             raise RuntimeError("Context Hub unavailable")
@@ -484,6 +502,13 @@ if __name__ == "__main__":
     update = budgeted._compact_update({"memory_contents": dict(corpus)})
     assert sum(len(v) for v in update["memory_contents"].values()) <= budget
     assert budgeted._compact_update(None) is None
+
+    get_config = lambda: {}  # type: ignore[assignment]
+    assert budgeted.before_agent({}, SimpleNamespace())["memory_contents"]
+
+    import asyncio
+
+    assert asyncio.run(budgeted.abefore_agent({}, SimpleNamespace()))["memory_contents"]
 
     guard = MemoryWriteGuardMiddleware(["/memory/AGENTS.md", "/memory/scorecard.md"])
     handled = object()

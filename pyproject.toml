@@ -12,7 +12,7 @@ dependencies = [
     "langchain-tavily>=0.2.18",
     "langgraph-cli[inmem]>=0.4.27",
     "langsmith[livekit,sandbox]>=0.10.4",
-    "livekit-agents[langchain,openai,silero,turn-detector]~=1.5",
+    "livekit-agents[langchain,openai,silero]~=1.5",
     "openevals>=0.2.0",
 ]
 

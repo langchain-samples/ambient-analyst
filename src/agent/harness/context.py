@@ -1,4 +1,4 @@
-"""Sync Ambient Analyst Context Hub files to and from ./context."""
+"""Sync Ambient Analyst Context Hub files to and from ./src/context."""
 
 import argparse
 import json
@@ -13,8 +13,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 dotenv.load_dotenv(override=True)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-CONTEXT_DIR = PROJECT_ROOT / "context"
+CONTEXT_DIR = Path(__file__).resolve().parents[2] / "context"
 MANIFEST = CONTEXT_DIR / ".contexthub.json"
 
 MEMORY_REPO = os.environ.get("AMBIENT_ANALYST_MEMORY_REPO", "ambient-analyst-memory")
