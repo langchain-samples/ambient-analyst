@@ -41,6 +41,7 @@ from langsmith import Client
 from langsmith.sandbox import SandboxClient
 
 from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from agent.harness.citations import CitationGuardMiddleware
 from agent.harness.context import MEMORY_REPO, SKILL_HANDLES, prompt_identifier
 from agent.harness.hub import ResilientHubBackend
 from agent.harness.memory import (
@@ -241,6 +242,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         middleware=[
             rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
+            CitationGuardMiddleware(),
             # Passed here instead of via `memory=` so the block is size-capped.
             # deepagents' MemoryMiddleware loads the files once per request but
             # re-injects them into the system prompt on every model turn and
