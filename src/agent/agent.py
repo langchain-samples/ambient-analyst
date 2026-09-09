@@ -13,9 +13,7 @@ Storage in LangSmith (workspace-scoped API key resolves its own tenant — no
   discovers them with progressive disclosure.
 - **Memory**: Context Hub *agent repo* `ambient-analyst-memory` (`AGENTS.md` +
   `scorecard.md`), mounted at `/memory/` and written back at runtime — the
-  ambient-analyst-continuous-learning loop. Injected under a character budget
-  (see `utils/memory.py`) because memory is re-serialized into the prompt on
-  every model turn.
+  ambient-analyst-continuous-learning loop.
 - **Analysis sandbox**: a LangSmith sandbox mounted at `/analysis/` for data
   analysis, calculations, charts, and intermediate artifacts.
 - A `CompositeBackend` keeps scratch files ephemeral (`StateBackend`).
@@ -25,75 +23,75 @@ import logging
 import os
 import pathlib
 import tempfile
+from typing import TYPE_CHECKING
 
-from deepagents import create_deep_agent, DeepAgentState
+from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AnyMessage
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph.message import add_messages
+from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
 from langsmith.sandbox import SandboxClient
 
-from ambient_analyst.utils.assistants import (
-    DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_TOOLS,
-    assistant_settings,
+from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from agent.harness.context import MEMORY_REPO, SKILL_HANDLES, prompt_identifier
+from agent.harness.hub import ResilientHubBackend
+from agent.harness.memory import (
+    COLD_MEMORY_PATH,
+    HotPathMemoryMiddleware,
+    MEMORY_EVENTS_PATH,
+    SemanticPreferenceMiddleware,
+    run_context_interpreter,
 )
-from ambient_analyst.utils.budget import RecursionFloorMiddleware, StepBudgetMiddleware
-from ambient_analyst.utils.memory import BudgetedMemoryMiddleware, check_memory_corpus
-from ambient_analyst.utils.pii import PIIRedactionMiddleware
-from ambient_analyst.utils.retry import rate_limit_retry_middleware
+from agent.harness.pii import PIIRedactionMiddleware
+from agent.harness.retry import rate_limit_retry_middleware
 
 import dotenv
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
 
 dotenv.load_dotenv(override=True)
 
 
 logger = logging.getLogger(__name__)
 
-# LangSmith resources (override via env to target staging vs production).
-MEMORY_REPO = os.environ.get("AMBIENT_ANALYST_MEMORY_REPO", "ambient-analyst-memory")
-# Each skill is its own Context Hub skill repo; handle == skill (and directory) name.
-SKILL_HANDLES = [
-    h.strip()
-    for h in os.environ.get(
-        "AMBIENT_ANALYST_SKILLS",
-        "ambient-analyst-model-evaluation,ambient-analyst-benchmark-analysis,ambient-analyst-landscape-mapping,"
-        "ambient-analyst-scorecard-maintenance,ambient-analyst-continuous-learning",
-    ).split(",")
-    if h.strip()
+tavily_search = TavilySearch(max_results=5)
+tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
+TOOLS = {
+    "tavily_search": tavily_search,
+    "tavily_extract": tavily_extract,
+    "run_context_interpreter": run_context_interpreter,
+}
+DEFAULT_TOOLS = [
+    tavily_search,
+    tavily_extract,
+    run_context_interpreter,
 ]
+PROMPT_NAME = os.environ.get("AMBIENT_ANALYST_PROMPT_NAME", "ambient-analyst-prompt")
 
 # Stable sandbox for analysis artifacts.
 SANDBOX_NAME = os.environ.get(
     "AMBIENT_ANALYST_SANDBOX", "ambient-analyst-sandbox"
 )
 
-# Memory files loaded into context every run. Order matters: the durable
-# instructions come first and are kept head-first when the budget bites, the
-# append-only scorecard follows and is kept tail-first (see utils/memory.py).
+# Memory files loaded into context every run.
 MEMORY_SOURCES = ["/memory/AGENTS.md", "/memory/scorecard.md"]
-
-# Memory is re-serialized into the system prompt on every model turn, so the
-# mounted corpus is a fixed per-turn token cost. Cap what can reach the prompt;
-# anything over the cap stays reachable through grep/read_file on /memory/.
-MEMORY_CHAR_BUDGET = int(
-    os.environ.get("AMBIENT_ANALYST_MEMORY_CHAR_BUDGET", "40000")
-)
-# Set to 1 (e.g. in CI) to make an over-budget memory corpus a hard failure.
-MEMORY_BUDGET_STRICT = os.environ.get("AMBIENT_ANALYST_MEMORY_STRICT", "") == "1"
 
 # Bounded research: hard step backstop + graceful final-answer turn budget.
 RECURSION_LIMIT = 75
 MAX_MODEL_TURNS = 25
 
 client = Client()
+DEFAULT_SYSTEM_PROMPT = client.pull_prompt(
+    prompt_identifier(client),
+    dangerously_pull_public_prompt=True,
+).messages[0].prompt.template
 
 # The system prompt and tool selection come from the assistant's config (see
 # utils/assistants.py); `build_agent` takes them as arguments and the `make_agent`
@@ -114,13 +112,14 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 # Default agent model — exported so the eval suite can record it in experiment
 # metadata (single source of truth for the "what model ran" tag).
 DEFAULT_PROVIDER = "openai"
-DEFAULT_MODEL = "gpt-5.4-mini-2026-03-17"
+DEFAULT_MODEL = "gpt-5.6-luna"
 
 model = init_chat_model(
     model=DEFAULT_MODEL,
     model_provider=DEFAULT_PROVIDER,
     base_url="https://gateway.smith.langchain.com/openai",
-    api_key=os.getenv("LC_GATEWAY_KEY")
+    api_key=os.getenv("LC_GATEWAY_KEY"),
+    reasoning_effort="none",
 )
 
 # Mount a persistent analysis environment. Create it on first startup and reuse
@@ -155,14 +154,9 @@ backend = CompositeBackend(
     default=StateBackend(),
     routes={
         "/skills/": skills_backend,
-        "/memory/": ContextHubBackend(MEMORY_REPO),
+        "/memory/": ResilientHubBackend(ContextHubBackend(MEMORY_REPO), max_retries=3),
         **sandbox_routes,
     },
-)
-
-# Catch unbounded memory growth at startup rather than in production token spend.
-check_memory_corpus(
-    backend, MEMORY_SOURCES, MEMORY_CHAR_BUDGET, strict=MEMORY_BUDGET_STRICT
 )
 
 # Regular (dict-form) subagents. With CodeInterpreterMiddleware, the agent can
@@ -184,7 +178,29 @@ DYNAMIC_SUBAGENTS = [
             "cite dated primary sources. Return a concise analyst brief."
         ),
     },
+    {
+        "name": "memory-consolidator",
+        "description": (
+            "Cold-path worker. Consolidates repeated hot-path memory events into "
+            "durable analyst preferences, standing filters, or summary updates."
+        ),
+        "system_prompt": (
+            f"Read hot-path events from {MEMORY_EVENTS_PATH}. Use "
+            "run_context_interpreter to count repeated topics and event kinds. "
+            f"Update {COLD_MEMORY_PATH} only for durable patterns with clear "
+            "evidence; do not rewrite broad memory summaries for one-off events."
+        ),
+        "tools": [run_context_interpreter],
+    },
 ]
+
+
+def assistant_settings(config: RunnableConfig | None) -> tuple[str, list["BaseTool"]]:
+    cfg = (config or {}).get("configurable") or {}
+    names = cfg.get("tools")
+    tools = [TOOLS[n] for n in names if n in TOOLS] if names is not None else DEFAULT_TOOLS
+    return cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT, tools
+
 
 def build_agent(chat_model=None, system_prompt=None, tools=None):
     """Build the Ambient Analyst agent.
@@ -200,23 +216,13 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
         backend=backend,
         skills=["/skills/"],
+        memory=MEMORY_SOURCES,
         subagents=DYNAMIC_SUBAGENTS,
         middleware=[
             rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
-            # Passed here instead of via `memory=` so the block is size-capped.
-            # deepagents' MemoryMiddleware already loads the files once per
-            # request, but it re-injects them into the system prompt on every
-            # model turn and offers no before-agent-only mode — the budget, not
-            # the injection point, is what bounds the cost. Note the harness's
-            # AnthropicPromptCachingMiddleware is inert here: this agent runs an
-            # OpenAI model through the gateway.
-            BudgetedMemoryMiddleware(
-                backend=backend,
-                sources=MEMORY_SOURCES,
-                add_cache_control=True,
-                char_budget=MEMORY_CHAR_BUDGET,
-            ),
+            SemanticPreferenceMiddleware(),
+            HotPathMemoryMiddleware({"tavily_search", "tavily_extract", "task"}),
             RecursionFloorMiddleware(),
             StepBudgetMiddleware(max_model_turns=MAX_MODEL_TURNS),
             CodeInterpreterMiddleware(),
@@ -224,11 +230,34 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
     ).with_config({"recursion_limit": RECURSION_LIMIT})
 
 
+def _chat_model_from_config(config: RunnableConfig):
+    cfg = (config or {}).get("configurable") or {}
+    configured = cfg.get("model")
+    if not configured:
+        return model
+
+    if ":" in configured:
+        provider, model_name = configured.split(":", 1)
+    else:
+        provider, model_name = DEFAULT_PROVIDER, configured
+    return init_chat_model(
+        model=model_name,
+        model_provider=provider,
+        base_url=f"https://gateway.smith.langchain.com/{provider}",
+        api_key=os.getenv("LC_GATEWAY_KEY"),
+        reasoning_effort="none" if provider == "openai" else None,
+    )
+
+
 def make_agent(config: RunnableConfig):
     """Graph factory: build the agent from the assistant's config (prompt + tools).
     """
     system_prompt, tools = assistant_settings(config)
-    return build_agent(system_prompt=system_prompt, tools=tools)
+    return build_agent(
+        chat_model=_chat_model_from_config(config),
+        system_prompt=system_prompt,
+        tools=tools,
+    )
 
 
 # Default compiled instance — imported by the offline eval. `make_agent` is what
