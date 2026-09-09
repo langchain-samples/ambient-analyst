@@ -39,10 +39,19 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 def _is_retryable_result(result: Any) -> bool:
-    error = getattr(result, "error", None)
+    error = hub_result_value(result, "error")
     return isinstance(error, str) and any(
         marker in error.lower() for marker in _RETRYABLE_MARKERS
     )
+
+
+def hub_result_value(result: Any, key: str) -> Any:
+    return result.get(key) if isinstance(result, dict) else getattr(result, key, None)
+
+
+def hub_result_content(result: Any) -> str:
+    content = hub_result_value(result, "content")
+    return content.decode("utf-8") if isinstance(content, bytes) else (content or "")
 
 
 class ResilientHubBackend:
@@ -147,6 +156,11 @@ if __name__ == "__main__":
     assert HubDown.calls == 12, HubDown.calls
 
     assert _is_retryable(RequestsJSONDecodeError("Expecting value", "", 0))
+    assert _is_retryable_result({"error": "HTTP 409"})
+    assert hub_result_value({"file_data": {"content": "x"}}, "file_data") == {
+        "content": "x"
+    }
+    assert hub_result_content({"content": b"x"}) == "x"
     assert not _is_retryable(ValueError("old_string not found"))
     assert ResilientHubBackend(NotFound(), max_retries=3).read("AGENTS.md").error
     assert ResilientHubBackend(HubDown()).max_retries == 3

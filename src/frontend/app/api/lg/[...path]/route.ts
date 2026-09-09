@@ -25,14 +25,22 @@ async function handler(
   if (API_KEY) headers.set("x-api-key", API_KEY);
 
   const hasBody = !["GET", "HEAD"].includes(req.method);
-  const upstream = await fetch(target, {
-    method: req.method,
-    headers,
-    body: hasBody ? req.body : undefined,
-    // Required by Node's fetch when streaming a request body.
-    ...(hasBody ? { duplex: "half" } : {}),
-    redirect: "manual",
-  } as RequestInit);
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, {
+      method: req.method,
+      headers,
+      body: hasBody ? req.body : undefined,
+      // Required by Node's fetch when streaming a request body.
+      ...(hasBody ? { duplex: "half" } : {}),
+      redirect: "manual",
+    } as RequestInit);
+  } catch {
+    return Response.json(
+      { error: "LangGraph agent unavailable", retryable: true },
+      { status: 502 },
+    );
+  }
 
   // Pass the (possibly streaming/SSE) body straight through. Drop encoding/
   // length headers — fetch has already decoded the upstream response.
