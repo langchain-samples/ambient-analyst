@@ -10,7 +10,7 @@ growth past the budget at startup.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -33,6 +33,8 @@ MEMORY_EVENTS_FILE = "hot-path-events.jsonl"
 MEMORY_EVENTS_PATH = f"/memory/{MEMORY_EVENTS_FILE}"
 MEMORY_EVENTS_MAX_LINES = 500
 COLD_MEMORY_PATH = "/memory/cold-path-memory.md"
+MEMORY_WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+HARNESS_MEMORY_PATHS = frozenset({MEMORY_EVENTS_PATH, COLD_MEMORY_PATH})
 MEMORY_TRUNCATION_NOTICE = (
     "[MEMORY TRUNCATED: {elided} of {total} characters of {path} were elided to "
     "stay within the {budget}-character memory budget, so what you see above is "
@@ -188,6 +190,36 @@ class HotPathMemoryMiddleware(AgentMiddleware):
         result = await handler(request)
         self._record(request, result)
         return result
+
+
+class MemoryWriteGuardMiddleware(AgentMiddleware):
+    """Reject durable writes to /memory/ paths that are never loaded back into context."""
+
+    def __init__(self, injected_paths: Iterable[str]) -> None:
+        self.allowed_paths = set(injected_paths) | HARNESS_MEMORY_PATHS
+
+    def _rejection(self, request: Any) -> str | None:
+        tool_call = getattr(request, "tool_call", None) or {}
+        if tool_call.get("name") not in MEMORY_WRITE_TOOLS:
+            return None
+        path = (tool_call.get("args") or {}).get("file_path")
+        if not isinstance(path, str) or not path.startswith("/memory/"):
+            return None
+        if path in self.allowed_paths:
+            return None
+        return (
+            f"Rejected: {path} is not loaded into context. Durable findings must be "
+            "written to /memory/AGENTS.md (or /memory/scorecard.md for LLM scorecard "
+            "rows)."
+        )
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        rejection = self._rejection(request)
+        return rejection if rejection is not None else handler(request)
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        rejection = self._rejection(request)
+        return rejection if rejection is not None else await handler(request)
 
 
 class SemanticPreferenceMiddleware(AgentMiddleware):
@@ -452,4 +484,21 @@ if __name__ == "__main__":
     update = budgeted._compact_update({"memory_contents": dict(corpus)})
     assert sum(len(v) for v in update["memory_contents"].values()) <= budget
     assert budgeted._compact_update(None) is None
+
+    guard = MemoryWriteGuardMiddleware(["/memory/AGENTS.md", "/memory/scorecard.md"])
+    handled = object()
+
+    def _write(path: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            tool_call={"name": "write_file", "args": {"file_path": path}}
+        )
+
+    assert guard.wrap_tool_call(_write("/memory/AGENTS.md"), lambda r: handled) is handled
+    assert guard.wrap_tool_call(_write("/analysis/foo.csv"), lambda r: handled) is handled
+    assert guard.wrap_tool_call(_write(COLD_MEMORY_PATH), lambda r: handled) is handled
+    orphan = guard.wrap_tool_call(
+        _write("/memory/frontier-market-growth-2026.md"), lambda r: handled
+    )
+    assert "is not loaded into context" in orphan, orphan
+    assert "/memory/AGENTS.md" in orphan, orphan
     print("ok")
