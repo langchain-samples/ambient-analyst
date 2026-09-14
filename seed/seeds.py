@@ -35,7 +35,7 @@ import dotenv
 dotenv.load_dotenv()
 
 # DEFAULT_URL = "https://ambient-analyst-green-fa41f97de119549eb13db912e4607dc8.us.langgraph.app"
-DEFAULT_URL = "https://ambient-analyst-blue-9e53d7f1c31059d3b30cb495b9aa783a.us.langgraph.app"
+DEFAULT_URL = "https://ambient-analyst-green-a86a264c5ac852af8d2879af1db188ab.us.langgraph.app"
 DEFAULT_ASSISTANT = "ambient-analyst"
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ DEFAULT_ASSISTANT = "ambient-analyst"
 CONVERSATIONS: list[dict] = [
     # ---- One-off questions --------------------------------------------------
     {"title": "USD strength drivers", "turns": [
-        "What's driving the recent strength in the US dollar, and which sectors benefit most?",
+        "What's driving the recent strength in the US dollar, and which sectors benefit most? Include a simple visual comparing the main drivers and sector beneficiaries.",
     ]},
     {"title": "Semis bull/bear", "turns": [
         "Give me the bull and bear case for semiconductors heading into next year.",
@@ -56,10 +56,10 @@ CONVERSATIONS: list[dict] = [
         "How exposed is the global economy to a prolonged slowdown in Chinese property?",
     ]},
     {"title": "Oil price outlook", "turns": [
-        "Summarize the key supply and demand factors that will shape oil prices over the next 12 months.",
+        "Summarize the key supply and demand factors that will shape oil prices over the next 12 months. Build and share a visual showing the main supply and demand forces.",
     ]},
     {"title": "Fed rate path", "turns": [
-        "What does the current rate environment imply for growth vs. value equity positioning?",
+        "What does the current rate environment imply for growth vs. value equity positioning? Include a visual comparing the implications for growth and value under the main rate scenarios.",
     ]},
     {"title": "AI capex", "turns": [
         "Is hyperscaler AI capex sustainable, or are we heading toward a digestion phase? Lay out the debate.",
@@ -92,7 +92,7 @@ CONVERSATIONS: list[dict] = [
         "How does rising global defense spending flow through to industrial and tech supply chains?",
     ]},
     {"title": "Consumer health", "turns": [
-        "Is the US consumer as strong as headline spending suggests? Break down the divergences by income cohort.",
+        "Is the US consumer as strong as headline spending suggests? Break down the divergences by income cohort and include a visual comparing the cohorts.",
     ]},
     {"title": "Copper demand", "turns": [
         "Why do people call copper the 'metal of electrification,' and is the demand story overhyped?",
@@ -180,7 +180,7 @@ CONVERSATIONS: list[dict] = [
         "What would need to change for European outperformance to persist?",
     ]},
     {"title": "Aging demographics", "turns": [
-        "How will aging demographics reshape growth and inflation in developed markets?",
+        "How will aging demographics reshape growth and inflation in developed markets? Create and share a visual mapping the main demographic effects on growth and inflation.",
         "Which sectors are structural winners from that shift?",
         "Does immigration realistically offset the drag?",
     ]},
@@ -200,7 +200,7 @@ CONVERSATIONS: list[dict] = [
         "Who are the clearest structural losers?",
     ]},
     {"title": "Data center power", "turns": [
-        "Is power availability the real bottleneck for AI data center buildout?",
+        "Is power availability the real bottleneck for AI data center buildout? Build and share a visual showing the bottleneck chain from data-center demand to grid capacity.",
         "What does that mean for utilities and grid investment?",
         "Which regions are best positioned to capture that demand?",
     ]},

@@ -1,0 +1,11 @@
+[project]
+name = "ambient-analyst-managed"
+version = "0.0.0"
+description = "A Managed Deep Agent project."
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.6.7",
+    "langchain-openai>=1.4.2",
+    "langchain-tavily>=0.2.18",
+    "managed-deepagents==0.5.1"
+]
