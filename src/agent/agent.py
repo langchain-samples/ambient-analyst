@@ -35,12 +35,16 @@ from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from langchain.chat_models import init_chat_model
+from langchain.messages import AIMessage, ToolMessage
+from langchain.tools import ToolRuntime
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
 from langsmith.sandbox import SandboxClient
+from langgraph.types import Command
 
 from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
 from agent.harness.citations import CitationGuardMiddleware
@@ -58,6 +62,7 @@ from agent.harness.memory import (
 )
 from agent.harness.pii import PIIRedactionMiddleware
 from agent.harness.retry import rate_limit_retry_middleware
+from agent.harness.visualization import share_visualization
 
 import dotenv
 
@@ -76,17 +81,6 @@ warnings.filterwarnings(
 
 tavily_search = TavilySearch(max_results=5)
 tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
-TOOLS = {
-    "tavily_search": tavily_search,
-    "tavily_extract": tavily_extract,
-    "run_context_interpreter": run_context_interpreter,
-}
-DEFAULT_TOOLS = [
-    tavily_search,
-    tavily_extract,
-    run_context_interpreter,
-]
-
 
 def _required(component: str, fn):
     try:
@@ -102,6 +96,10 @@ def _required_env(name: str) -> str:
     if not value:
         raise ValueError(f"missing {name}")
     return value
+
+
+def _gateway_headers() -> dict[str, str]:
+    return {"X-Tenant-ID": _required_env("LANGSMITH_WORKSPACE_ID")}
 
 
 PROMPT_NAME = os.environ.get("AMBIENT_ANALYST_PROMPT_NAME", "ambient-analyst-prompt")
@@ -171,6 +169,7 @@ model = _required(
         model_provider=DEFAULT_PROVIDER,
         base_url="https://gateway.smith.langchain.com/openai",
         api_key=_required_env("LC_GATEWAY_KEY"),
+        default_headers=_gateway_headers(),
         reasoning_effort="none",
     ),
 )
@@ -178,6 +177,7 @@ model = _required(
 # Mount a persistent analysis environment. Create it on first startup and reuse
 # it across runs so generated datasets and artifacts remain available.
 sandbox_routes = {}
+sandbox = None
 try:
     sandbox_client = SandboxClient()
     sandbox = next(
@@ -205,6 +205,43 @@ except Exception as exc:  # noqa: BLE001 — sandbox is optional at startup
         exc,
     )
 ANALYSIS_SANDBOX_MOUNTED = "/analysis/" in sandbox_routes
+
+
+@tool(return_direct=True)
+def share_visualization_link(path: str, runtime: ToolRuntime) -> Command:
+    """Publish HTML under /analysis/ as the final user-facing response."""
+    if not ANALYSIS_SANDBOX_MOUNTED:
+        raise RuntimeError("the analysis sandbox is unavailable")
+    link = share_visualization(sandbox, path)
+    response = f"[Open visualization]({link.download_url})\n\nExpires in one hour."
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(content="Visualization published.", tool_call_id=runtime.tool_call_id),
+                AIMessage(content=response),
+            ]
+        }
+    )
+
+
+TOOLS = {
+    "tavily_search": tavily_search,
+    "tavily_extract": tavily_extract,
+    "run_context_interpreter": run_context_interpreter,
+    "share_visualization_link": share_visualization_link,
+}
+DEFAULT_TOOLS = list(TOOLS.values())
+
+VISUALIZATION_INSTRUCTIONS = """
+When a visualization materially helps, write one self-contained static HTML file
+under /analysis/ with inline CSS and SVG, then call share_visualization_link as
+the final action. Its direct output is sent to the user unchanged. Do not use
+JavaScript or external assets: the browser link renders in a sandbox. Do not
+expose sensitive data.
+If a user says a visualization link expired or is invalid, call
+share_visualization_link again with the existing /analysis/ file path; do not
+recreate the visualization.
+"""
 
 # Scratch files stay ephemeral in state; /skills serves the pulled skill repos;
 # /memory persists to the LangSmith Context Hub; /analysis/ is the managed
@@ -263,6 +300,8 @@ def assistant_settings(config: RunnableConfig | None) -> tuple[str, list["BaseTo
     cfg = (config or {}).get("configurable") or {}
     names = cfg.get("tools")
     tools = [TOOLS[n] for n in names if n in TOOLS] if names is not None else DEFAULT_TOOLS
+    if share_visualization_link not in tools:
+        tools.append(share_visualization_link)
     return cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT, tools
 
 
@@ -277,7 +316,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
     return create_deep_agent(
         model=chat_model or model,
         tools=DEFAULT_TOOLS if tools is None else tools,
-        system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
+        system_prompt=(system_prompt or DEFAULT_SYSTEM_PROMPT) + VISUALIZATION_INSTRUCTIONS,
         backend=backend,
         skills=["/skills/"],
         subagents=DYNAMIC_SUBAGENTS,
@@ -323,6 +362,7 @@ def _chat_model_from_config(config: RunnableConfig):
         model_provider=provider,
         base_url=f"https://gateway.smith.langchain.com/{provider}",
         api_key=_required_env("LC_GATEWAY_KEY"),
+        default_headers=_gateway_headers(),
         reasoning_effort="none" if provider == "openai" else None,
     )
 
