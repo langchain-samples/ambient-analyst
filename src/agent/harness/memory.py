@@ -36,7 +36,18 @@ MEMORY_EVENTS_PATH = f"/memory/{MEMORY_EVENTS_FILE}"
 MEMORY_EVENTS_MAX_LINES = 500
 COLD_MEMORY_PATH = "/memory/cold-path-memory.md"
 MEMORY_WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+MEMORY_READ_TOOL = "read_file"
 HARNESS_MEMORY_PATHS = frozenset({MEMORY_EVENTS_PATH, COLD_MEMORY_PATH})
+# The guard keeps one read set per run; bound it so a long-lived process cannot
+# accumulate one entry per thread forever.
+MAX_TRACKED_RUNS = 64
+BLIND_OVERWRITE_REJECTION = (
+    "Rejected: {path} is shared memory that other sessions write too, and "
+    "`write_file` replaces the whole file. This run has not successfully read "
+    "{path}, so a full rewrite would delete findings it never saw. Use "
+    "`edit_file` to insert your new content into the existing sections, or "
+    "`read_file` {path} first and include its current contents in the rewrite."
+)
 MEMORY_TRUNCATION_NOTICE = (
     "[MEMORY TRUNCATED: {elided} of {total} characters of {path} were elided to "
     "stay within the {budget}-character memory budget, so what you see above is "
@@ -199,34 +210,95 @@ class HotPathMemoryMiddleware(AgentMiddleware):
         return result
 
 
+def _result_text(result: Any) -> str:
+    """Best-effort string form of a tool result, for spotting `Error:` results."""
+    content = getattr(result, "content", result)
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return content if isinstance(content, str) else ""
+
+
+def _run_scope() -> str:
+    """Identify the current run so one session's reads cannot license another's write."""
+    try:
+        config = get_config() or {}
+    except Exception:  # noqa: BLE001 — outside a runnable context there is no scope
+        return ""
+    configurable = config.get("configurable") or {}
+    metadata = config.get("metadata") or {}
+    return str(
+        configurable.get("run_id")
+        or metadata.get("run_id")
+        or configurable.get("thread_id")
+        or ""
+    )
+
+
 class MemoryWriteGuardMiddleware(AgentMiddleware):
-    """Reject durable writes to /memory/ paths that are never loaded back into context."""
+    """Reject durable writes to /memory/ paths that are unloaded or unread this run."""
 
     def __init__(self, injected_paths: Iterable[str]) -> None:
-        self.allowed_paths = set(injected_paths) | HARNESS_MEMORY_PATHS
+        self.injected_paths = set(injected_paths)
+        self.allowed_paths = self.injected_paths | HARNESS_MEMORY_PATHS
+        self._reads_by_run: dict[str, set[str]] = {}
+
+    def _record_read(self, request: Any, result: Any) -> None:
+        tool_call = getattr(request, "tool_call", None) or {}
+        if tool_call.get("name") != MEMORY_READ_TOOL:
+            return
+        path = (tool_call.get("args") or {}).get("file_path")
+        if path not in self.injected_paths:
+            return
+        if _result_text(result).lstrip().startswith("Error"):
+            return
+        scope = _run_scope()
+        reads = self._reads_by_run.get(scope)
+        if reads is None:
+            while len(self._reads_by_run) >= MAX_TRACKED_RUNS:
+                self._reads_by_run.pop(next(iter(self._reads_by_run)))
+            reads = self._reads_by_run.setdefault(scope, set())
+        reads.add(path)
 
     def _rejection(self, request: Any) -> str | None:
         tool_call = getattr(request, "tool_call", None) or {}
-        if tool_call.get("name") not in MEMORY_WRITE_TOOLS:
+        name = tool_call.get("name")
+        if name not in MEMORY_WRITE_TOOLS:
             return None
         path = (tool_call.get("args") or {}).get("file_path")
         if not isinstance(path, str) or not path.startswith("/memory/"):
             return None
-        if path in self.allowed_paths:
-            return None
-        return (
-            f"Rejected: {path} is not loaded into context. Durable findings must be "
-            "written to /memory/AGENTS.md (or /memory/scorecard.md for LLM scorecard "
-            "rows)."
-        )
+        if path not in self.allowed_paths:
+            return (
+                f"Rejected: {path} is not loaded into context. Durable findings must be "
+                "written to /memory/AGENTS.md (or /memory/scorecard.md for LLM scorecard "
+                "rows)."
+            )
+        if (
+            name == "write_file"
+            and path in self.injected_paths
+            and path not in self._reads_by_run.get(_run_scope(), frozenset())
+        ):
+            return BLIND_OVERWRITE_REJECTION.format(path=path)
+        return None
 
     def wrap_tool_call(self, request: Any, handler: Any) -> Any:
         rejection = self._rejection(request)
-        return rejection if rejection is not None else handler(request)
+        if rejection is not None:
+            return rejection
+        result = handler(request)
+        self._record_read(request, result)
+        return result
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         rejection = self._rejection(request)
-        return rejection if rejection is not None else await handler(request)
+        if rejection is not None:
+            return rejection
+        result = await handler(request)
+        self._record_read(request, result)
+        return result
 
 
 class SemanticPreferenceMiddleware(AgentMiddleware):
@@ -371,6 +443,7 @@ class BudgetedMemoryMiddleware(MemoryMiddleware):
     def __init__(self, *, char_budget: int, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.char_budget = char_budget
+        self._last_loaded: dict[str, str] = {}
 
     def before_agent(
         self, state: Any, runtime: Any, config: RunnableConfig | None = None
@@ -394,9 +467,41 @@ class BudgetedMemoryMiddleware(MemoryMiddleware):
         return {
             **update,
             "memory_contents": compact_memory_contents(
-                update["memory_contents"], self.sources, self.char_budget
+                self._restore_unreadable(update["memory_contents"]),
+                self.sources,
+                self.char_budget,
             ),
         }
+
+    def _restore_unreadable(self, contents: dict[str, str]) -> dict[str, str]:
+        """Fall back to the last snapshot of a source rather than an empty block."""
+        restored = dict(contents)
+        for path in self.sources:
+            loaded = restored.get(path)
+            readable = (
+                isinstance(loaded, str)
+                and bool(loaded.strip())
+                and not loaded.lstrip().startswith("Error")
+            )
+            if readable:
+                self._last_loaded[path] = loaded
+                continue
+            snapshot = self._last_loaded.get(path)
+            if snapshot is None:
+                logger.warning(
+                    "Memory source %s could not be loaded and no earlier snapshot is "
+                    "available; this run proceeds without it.",
+                    path,
+                )
+                continue
+            logger.warning(
+                "Memory source %s could not be loaded; reusing the last loaded "
+                "snapshot (%d characters) instead of injecting an empty block.",
+                path,
+                len(snapshot),
+            )
+            restored[path] = snapshot
+        return restored
 
 
 if __name__ == "__main__":
@@ -503,6 +608,11 @@ if __name__ == "__main__":
     assert sum(len(v) for v in update["memory_contents"].values()) <= budget
     assert budgeted._compact_update(None) is None
 
+    degraded = budgeted._compact_update(
+        {"memory_contents": {**corpus, "/memory/AGENTS.md": ""}}
+    )
+    assert degraded["memory_contents"]["/memory/AGENTS.md"].startswith("instruction 0\n")
+
     get_config = lambda: {}  # type: ignore[assignment]
     assert budgeted.before_agent({}, SimpleNamespace())["memory_contents"]
 
@@ -513,11 +623,20 @@ if __name__ == "__main__":
     guard = MemoryWriteGuardMiddleware(["/memory/AGENTS.md", "/memory/scorecard.md"])
     handled = object()
 
-    def _write(path: str) -> SimpleNamespace:
-        return SimpleNamespace(
-            tool_call={"name": "write_file", "args": {"file_path": path}}
-        )
+    def _call(name: str, path: str) -> SimpleNamespace:
+        return SimpleNamespace(tool_call={"name": name, "args": {"file_path": path}})
 
+    def _write(path: str) -> SimpleNamespace:
+        return _call("write_file", path)
+
+    blind = guard.wrap_tool_call(_write("/memory/AGENTS.md"), lambda r: handled)
+    assert "has not successfully read" in blind, blind
+    assert guard.wrap_tool_call(
+        _call("edit_file", "/memory/AGENTS.md"), lambda r: handled
+    ) is handled
+    assert guard.wrap_tool_call(
+        _call("read_file", "/memory/AGENTS.md"), lambda r: "# Analyst Memory\n"
+    )
     assert guard.wrap_tool_call(_write("/memory/AGENTS.md"), lambda r: handled) is handled
     assert guard.wrap_tool_call(_write("/analysis/foo.csv"), lambda r: handled) is handled
     assert guard.wrap_tool_call(_write(COLD_MEMORY_PATH), lambda r: handled) is handled

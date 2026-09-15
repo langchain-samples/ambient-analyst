@@ -250,7 +250,11 @@ backend = CompositeBackend(
     default=StateBackend(),
     routes={
         "/skills/": skills_backend,
-        "/memory/": ResilientHubBackend(ContextHubBackend(MEMORY_REPO), max_retries=3),
+        "/memory/": ResilientHubBackend(
+            ContextHubBackend(MEMORY_REPO),
+            max_retries=3,
+            retry_missing_paths=MEMORY_SOURCES,
+        ),
         **sandbox_routes,
     },
 )

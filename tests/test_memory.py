@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 
 from agent.harness import hub
 from agent.harness import memory
@@ -136,6 +136,180 @@ def test_retryable_result_markers():
     assert not hub._is_retryable_result(EditResult(error="Error: File not found"))
     assert not hub._is_retryable_result(EditResult())
     assert not hub._is_retryable_result({"error": None})
+
+
+def test_missing_read_of_injected_memory_path_is_retried(monkeypatch):
+    monkeypatch.setattr(hub, "BACKOFF_SECONDS", 0)
+
+    class _MissingThenPresent:
+        def __init__(self, fail_times):
+            self._fail_times = fail_times
+            self.read_calls = 0
+
+        def read(self, file_path, offset=0, limit=2000):
+            self.read_calls += 1
+            if self.read_calls <= self._fail_times:
+                return ReadResult(error="Error: File '/AGENTS.md' not found")
+            return {"error": None, "file_data": {"content": "# Analyst Memory"}}
+
+    inner = _MissingThenPresent(fail_times=1)
+    backend = ResilientHubBackend(
+        inner, max_retries=3, retry_missing_paths=["/memory/AGENTS.md"]
+    )
+
+    result = backend.read("/AGENTS.md")
+    assert hub.hub_result_content(result["file_data"]) == "# Analyst Memory"
+    assert inner.read_calls == 2
+
+    inner = _MissingThenPresent(fail_times=99)
+    backend = ResilientHubBackend(
+        inner, max_retries=3, retry_missing_paths=["/memory/AGENTS.md"]
+    )
+
+    assert "not found" in backend.read("/AGENTS.md").error
+    assert inner.read_calls == 3
+
+
+def test_missing_read_of_unlisted_path_is_not_retried():
+    class _AlwaysMissing:
+        def __init__(self):
+            self.read_calls = 0
+
+        def read(self, file_path, offset=0, limit=2000):
+            self.read_calls += 1
+            return ReadResult(error="Error: File '/notes.md' not found")
+
+    inner = _AlwaysMissing()
+    backend = ResilientHubBackend(
+        inner, max_retries=3, retry_missing_paths=["/memory/AGENTS.md"]
+    )
+
+    assert "not found" in backend.read("/notes.md").error
+    assert inner.read_calls == 1
+
+
+def _tool_request(name, path):
+    return SimpleNamespace(tool_call={"name": name, "args": {"file_path": path}})
+
+
+def test_full_write_without_prior_read_is_rejected():
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    handled = object()
+
+    result = guard.wrap_tool_call(
+        _tool_request("write_file", "/memory/AGENTS.md"), lambda _r: handled
+    )
+
+    assert isinstance(result, str)
+    assert "edit_file" in result
+    assert "read_file" in result
+
+
+def test_full_write_is_allowed_after_a_successful_read():
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    handled = object()
+
+    guard.wrap_tool_call(
+        _tool_request("read_file", "/memory/AGENTS.md"),
+        lambda _r: SimpleNamespace(content="# Analyst Memory\n- finding"),
+    )
+    result = guard.wrap_tool_call(
+        _tool_request("write_file", "/memory/AGENTS.md"), lambda _r: handled
+    )
+
+    assert result is handled
+
+
+def test_failed_read_does_not_license_a_full_write():
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    handled = object()
+
+    guard.wrap_tool_call(
+        _tool_request("read_file", "/memory/AGENTS.md"),
+        lambda _r: "Error: File '/AGENTS.md' not found",
+    )
+    result = guard.wrap_tool_call(
+        _tool_request("write_file", "/memory/AGENTS.md"), lambda _r: handled
+    )
+
+    assert isinstance(result, str)
+    assert "has not successfully read" in result
+
+
+def test_one_runs_read_does_not_license_another_runs_write(monkeypatch):
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    handled = object()
+
+    monkeypatch.setattr(
+        memory, "get_config", lambda: {"configurable": {"thread_id": "session-a"}}
+    )
+    guard.wrap_tool_call(
+        _tool_request("read_file", "/memory/AGENTS.md"),
+        lambda _r: SimpleNamespace(content="# Analyst Memory"),
+    )
+
+    monkeypatch.setattr(
+        memory, "get_config", lambda: {"configurable": {"thread_id": "session-b"}}
+    )
+    result = guard.wrap_tool_call(
+        _tool_request("write_file", "/memory/AGENTS.md"), lambda _r: handled
+    )
+
+    assert isinstance(result, str)
+    assert "has not successfully read" in result
+
+
+def test_edit_file_on_memory_is_unaffected_by_the_read_guard():
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    handled = object()
+
+    result = guard.wrap_tool_call(
+        _tool_request("edit_file", "/memory/AGENTS.md"), lambda _r: handled
+    )
+
+    assert result is handled
+
+
+def test_async_full_write_without_prior_read_is_rejected():
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    handled = object()
+
+    async def _handler(_request):
+        return handled
+
+    rejected = asyncio.run(
+        guard.awrap_tool_call(_tool_request("write_file", "/memory/AGENTS.md"), _handler)
+    )
+    asyncio.run(
+        guard.awrap_tool_call(
+            _tool_request("read_file", "/memory/AGENTS.md"),
+            lambda _r: _handler(_r),
+        )
+    )
+    allowed = asyncio.run(
+        guard.awrap_tool_call(_tool_request("write_file", "/memory/AGENTS.md"), _handler)
+    )
+
+    assert isinstance(rejected, str)
+    assert allowed is handled
+
+
+def test_unreadable_memory_source_falls_back_to_last_snapshot(caplog):
+    class _Backend:
+        def download_files(self, paths):
+            return [SimpleNamespace(content=b"", error=None) for _ in paths]
+
+    sources = ["/memory/AGENTS.md"]
+    middleware = memory.BudgetedMemoryMiddleware(
+        backend=_Backend(), sources=sources, char_budget=1000
+    )
+
+    middleware._compact_update({"memory_contents": {"/memory/AGENTS.md": "- finding"}})
+    with caplog.at_level("WARNING"):
+        degraded = middleware._compact_update({"memory_contents": {"/memory/AGENTS.md": ""}})
+
+    assert degraded["memory_contents"]["/memory/AGENTS.md"] == "- finding"
+    assert "last loaded snapshot" in caplog.text
 
 
 def test_hot_path_async_memory_append_runs_off_event_loop(monkeypatch):
