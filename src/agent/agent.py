@@ -17,7 +17,9 @@ Storage in LangSmith (workspace-scoped API key resolves its own tenant — no
   (see `harness/memory.py`) because memory is re-serialized into the prompt on
   every model turn.
 - **Analysis sandbox**: a LangSmith sandbox mounted at `/analysis/` for data
-  analysis, calculations, charts, and intermediate artifacts.
+  analysis, calculations, charts, and intermediate artifacts. The mount is lazy
+  and retried; while it is down the agent runs text-only and `/analysis/` reads
+  and writes return errors instead of silently landing in ephemeral state.
 - A `CompositeBackend` keeps scratch files ephemeral (`StateBackend`).
 """
 
@@ -35,16 +37,12 @@ from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from langchain.chat_models import init_chat_model
-from langchain.messages import AIMessage, ToolMessage
-from langchain.tools import ToolRuntime
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
 from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
 from langsmith.sandbox import SandboxClient
-from langgraph.types import Command
 
 from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
 from agent.harness.citations import CitationGuardMiddleware
@@ -62,7 +60,8 @@ from agent.harness.memory import (
 )
 from agent.harness.pii import PIIRedactionMiddleware
 from agent.harness.retry import rate_limit_retry_middleware
-from agent.harness.visualization import share_visualization
+from agent.harness.sandbox import AnalysisSandbox
+from agent.harness.visualization import build_share_visualization_link
 
 import dotenv
 
@@ -174,11 +173,9 @@ model = _required(
     ),
 )
 
-# Mount a persistent analysis environment. Create it on first startup and reuse
-# it across runs so generated datasets and artifacts remain available.
-sandbox_routes = {}
-sandbox = None
-try:
+
+def _mount_analysis_sandbox():
+    """Find or start the persistent analysis sandbox."""
     sandbox_client = SandboxClient()
     sandbox = next(
         (
@@ -197,31 +194,16 @@ try:
             sandbox = sandbox_client.start_sandbox(SANDBOX_NAME)
     if sandbox.status != "ready":
         sandbox = sandbox_client.start_sandbox(SANDBOX_NAME)
-    sandbox_routes["/analysis/"] = LangSmithSandbox(sandbox)
-except Exception as exc:  # noqa: BLE001 — sandbox is optional at startup
-    logger.warning(
-        "Analysis sandbox %r unavailable (%s); /analysis/ route disabled.",
-        SANDBOX_NAME,
-        exc,
-    )
-ANALYSIS_SANDBOX_MOUNTED = "/analysis/" in sandbox_routes
+    return sandbox
 
 
-@tool(return_direct=True)
-def share_visualization_link(path: str, runtime: ToolRuntime) -> Command:
-    """Publish HTML under /analysis/ as the final user-facing response."""
-    if not ANALYSIS_SANDBOX_MOUNTED:
-        raise RuntimeError("the analysis sandbox is unavailable")
-    link = share_visualization(sandbox, path)
-    response = f"[Open visualization]({link.download_url})\n\nExpires in one hour."
-    return Command(
-        update={
-            "messages": [
-                ToolMessage(content="Visualization published.", tool_call_id=runtime.tool_call_id),
-                AIMessage(content=response),
-            ]
-        }
-    )
+# Mount a persistent analysis environment. Create it on first startup and reuse
+# it across runs so generated datasets and artifacts remain available. The mount
+# is attempted lazily and retried on every use until it succeeds, so a sandbox
+# that recovers does not need a redeploy to come back.
+analysis_sandbox = AnalysisSandbox(_mount_analysis_sandbox, LangSmithSandbox)
+
+share_visualization_link = build_share_visualization_link(analysis_sandbox)
 
 
 TOOLS = {
@@ -230,7 +212,16 @@ TOOLS = {
     "run_context_interpreter": run_context_interpreter,
     "share_visualization_link": share_visualization_link,
 }
-DEFAULT_TOOLS = list(TOOLS.values())
+BASE_TOOLS = [tavily_search, tavily_extract, run_context_interpreter]
+
+
+def default_tools() -> list["BaseTool"]:
+    """Default tool set; publishing is only offered when the sandbox is mounted."""
+    tools = list(BASE_TOOLS)
+    if analysis_sandbox.available:
+        tools.append(share_visualization_link)
+    return tools
+
 
 VISUALIZATION_INSTRUCTIONS = """
 When a visualization materially helps, write one self-contained static HTML file
@@ -251,7 +242,7 @@ backend = CompositeBackend(
     routes={
         "/skills/": skills_backend,
         "/memory/": ResilientHubBackend(ContextHubBackend(MEMORY_REPO), max_retries=3),
-        **sandbox_routes,
+        "/analysis/": analysis_sandbox,
     },
 )
 
@@ -299,9 +290,12 @@ DYNAMIC_SUBAGENTS = [
 def assistant_settings(config: RunnableConfig | None) -> tuple[str, list["BaseTool"]]:
     cfg = (config or {}).get("configurable") or {}
     names = cfg.get("tools")
-    tools = [TOOLS[n] for n in names if n in TOOLS] if names is not None else DEFAULT_TOOLS
-    if share_visualization_link not in tools:
-        tools.append(share_visualization_link)
+    tools = [TOOLS[n] for n in names if n in TOOLS] if names is not None else default_tools()
+    if analysis_sandbox.available:
+        if share_visualization_link not in tools:
+            tools.append(share_visualization_link)
+    else:
+        tools = [t for t in tools if t is not share_visualization_link]
     return cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT, tools
 
 
@@ -313,10 +307,13 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
     (used by the offline eval and the A/B model eval, which only swaps the model).
     Skills, memory, and subagents are shared module state.
     """
+    visualization_instructions = (
+        VISUALIZATION_INSTRUCTIONS if analysis_sandbox.available else ""
+    )
     return create_deep_agent(
         model=chat_model or model,
-        tools=DEFAULT_TOOLS if tools is None else tools,
-        system_prompt=(system_prompt or DEFAULT_SYSTEM_PROMPT) + VISUALIZATION_INSTRUCTIONS,
+        tools=default_tools() if tools is None else tools,
+        system_prompt=(system_prompt or DEFAULT_SYSTEM_PROMPT) + visualization_instructions,
         backend=backend,
         skills=["/skills/"],
         subagents=DYNAMIC_SUBAGENTS,
