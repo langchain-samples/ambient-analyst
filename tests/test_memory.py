@@ -181,3 +181,70 @@ def test_append_memory_event_reads_dict_file_data(monkeypatch):
 
     assert memory._append_memory_event({"i": "new"}) is None
     assert captured[-1].splitlines() == ['{"i": "old"}', '{"i": "new"}']
+
+
+def _memory_edit_turn(tool_content, status="success"):
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    return [
+        HumanMessage(content="What would turn a refinancing problem into a default cycle?"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "args": {"file_path": "/memory/AGENTS.md", "old_string": "a", "new_string": "b"},
+                    "id": "edit-1",
+                }
+            ],
+        ),
+        ToolMessage(content=tool_content, tool_call_id="edit-1", name="edit_file", status=status),
+    ]
+
+
+def _guarded_final(messages, answer):
+    from langchain_core.messages import AIMessage
+
+    response = SimpleNamespace(result=[AIMessage(content=answer)])
+    guard = memory.MemorySaveClaimGuardMiddleware()
+    return guard.wrap_model_call(SimpleNamespace(messages=messages), lambda _r: response)
+
+
+_SAVE_CLAIM = "**Memory:** I saved the default-cycle framework to `/memory/AGENTS.md`."
+
+
+def test_save_claim_guard_flags_claim_when_memory_edit_errored():
+    messages = _memory_edit_turn("Error: String not found in file: 'x'", status="error")
+
+    out = _guarded_final(messages, _SAVE_CLAIM).result[-1].content
+
+    assert out.startswith(_SAVE_CLAIM)
+    assert memory.UNVERIFIED_SAVE_NOTICE in out
+
+
+def test_save_claim_guard_flags_claim_when_turn_made_no_tool_calls():
+    from langchain_core.messages import HumanMessage
+
+    earlier = _memory_edit_turn("Successfully replaced 1 instance(s) of the string in '/memory/AGENTS.md'")
+    messages = [*earlier, HumanMessage(content="How would you stress-test a portfolio?")]
+    answer = "I saved the durable stress-testing framework in memory; no personal data was stored."
+
+    out = _guarded_final(messages, answer).result[-1].content
+
+    assert memory.UNVERIFIED_SAVE_NOTICE in out
+
+
+def test_save_claim_guard_allows_claim_backed_by_successful_memory_write():
+    messages = _memory_edit_turn("Successfully replaced 1 instance(s) of the string in '/memory/AGENTS.md'")
+
+    out = _guarded_final(messages, _SAVE_CLAIM).result[-1].content
+
+    assert out == _SAVE_CLAIM
+
+
+def test_save_claim_guard_ignores_honest_and_unrelated_statements():
+    assert not memory.claims_memory_save(
+        "Nothing was saved; the attempted memory update did not match the file structure."
+    )
+    assert not memory.claims_memory_save("SK Hynix added share in memory as HBM demand rose.")
+    assert memory.claims_memory_save("Memory update: AGENTS.md updated with the stagflation framework.")

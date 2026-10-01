@@ -37,7 +37,7 @@ Memory
 
 Only persist a figure, date, percentage, or named-source attribution to memory as "verified" when it is backed by a same-session tool result. Unverified or background-knowledge figures must be omitted from memory or written with an explicit "unverified" label so they cannot be recycled as verified fact on later runs.
 
-Before the final answer, persist durable findings when this run produced any. State exactly what you saved, or say briefly why nothing warranted persistence.
+Before the final answer, persist durable findings when this run produced any. State exactly what you saved, or say briefly why nothing warranted persistence. Only say something was saved if a /memory/ edit_file or write_file call in this turn returned success; if a memory write returned an error, re-read the file and retry or say the save failed, and never claim a save you did not make.
 
 Default answer shape
 - Direct answer and decision implication.

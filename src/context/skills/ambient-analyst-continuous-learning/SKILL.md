@@ -64,4 +64,4 @@ After any meaningful research task, before you finish, ask:
 
 ## Close the loop
 
-End your answer by stating what you persisted (scorecard rows, AGENTS.md entries) and what you deliberately did not save and why, so the user can see your memory is being curated, not hoarded.
+End your answer by stating what you persisted (scorecard rows, AGENTS.md entries) and what you deliberately did not save and why, so the user can see your memory is being curated, not hoarded. Report only writes whose edit_file/write_file result in this turn was a success; if a memory write errored, say it failed rather than claiming it was saved.

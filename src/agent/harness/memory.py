@@ -20,7 +20,7 @@ from typing import Any
 from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.middleware.memory import MemoryMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.config import get_config
@@ -53,6 +53,27 @@ _PREFERENCE_PATTERNS = [
     ),
     re.compile(r"\bmy preference is (?P<preference>[^\n]+?)(?:[.!?](?:\s|$)|$)", re.I),
 ]
+_MEMORY_WRITE_SUCCESS_PREFIXES = ("Successfully replaced", "Updated file")
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
+_SAVE_VERB_RE = re.compile(
+    r"\b(?:saved|persisted|stored|recorded|wrote|written|added|appended|updated|logged)\b",
+    re.I,
+)
+# A bare "in memory" also appears in semiconductor analysis, so it only counts
+# as a memory target alongside a first-person subject.
+_MEMORY_TARGET_RE = re.compile(
+    r"/memory/|\bAGENTS\.md\b|\bscorecard\.md\b"
+    r"|(?=.*\b(?:I|we)\b).*\b(?:to|in|into)\s+(?:\w+\s+)?memory\b",
+    re.I,
+)
+_NEGATION_RE = re.compile(
+    r"\b(?:no|not|nothing|never|none|failed|unable|cannot|can't|couldn't|didn't|wasn't|weren't)\b",
+    re.I,
+)
+UNVERIFIED_SAVE_NOTICE = (
+    "**Memory correction:** no /memory/ write succeeded in this turn, so nothing "
+    "described above as saved was actually persisted."
+)
 
 
 @dataclass
@@ -227,6 +248,81 @@ class MemoryWriteGuardMiddleware(AgentMiddleware):
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         rejection = self._rejection(request)
         return rejection if rejection is not None else await handler(request)
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block if isinstance(block, str) else block["text"]
+            for block in content
+            if isinstance(block, str)
+            or (isinstance(block, dict) and isinstance(block.get("text"), str))
+        )
+    return ""
+
+
+def claims_memory_save(text: str) -> bool:
+    """True if any clause of `text` affirmatively says something was saved to memory."""
+    return any(
+        _SAVE_VERB_RE.search(clause)
+        and _MEMORY_TARGET_RE.search(clause)
+        and not _NEGATION_RE.search(clause)
+        for clause in _CLAUSE_SPLIT_RE.split(text)
+    )
+
+
+def memory_write_succeeded(messages: Sequence[BaseMessage]) -> bool:
+    """True if a /memory/ edit_file/write_file since the latest human message succeeded."""
+    start = next(
+        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
+        -1,
+    )
+    write_ids = set()
+    for message in messages[start + 1 :]:
+        if isinstance(message, AIMessage):
+            write_ids.update(
+                call.get("id")
+                for call in message.tool_calls
+                if call.get("name") in MEMORY_WRITE_TOOLS
+                and str((call.get("args") or {}).get("file_path", "")).startswith("/memory/")
+            )
+        elif (
+            isinstance(message, ToolMessage)
+            and message.tool_call_id in write_ids
+            and message.status != "error"
+            and _message_text(message.content).startswith(_MEMORY_WRITE_SUCCESS_PREFIXES)
+        ):
+            return True
+    return False
+
+
+class MemorySaveClaimGuardMiddleware(AgentMiddleware):
+    """Correct a final answer that claims a memory save no tool result in this turn backs."""
+
+    def _check(self, messages: Sequence[BaseMessage], response: Any) -> Any:
+        result = getattr(response, "result", None) or []
+        if not result or not isinstance(result[-1], AIMessage):
+            return response
+        final = result[-1]
+        if final.tool_calls or not claims_memory_save(_message_text(final.content)):
+            return response
+        if memory_write_succeeded(messages):
+            return response
+        content = final.content
+        if isinstance(content, list):
+            content = [*content, {"type": "text", "text": f"\n\n{UNVERIFIED_SAVE_NOTICE}"}]
+        else:
+            content = f"{content}\n\n{UNVERIFIED_SAVE_NOTICE}"
+        result[-1] = final.model_copy(update={"content": content})
+        return response
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        return self._check(request.messages, handler(request))
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        return self._check(request.messages, await handler(request))
 
 
 class SemanticPreferenceMiddleware(AgentMiddleware):
