@@ -162,6 +162,12 @@ skills_backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=True)
 DEFAULT_PROVIDER = "openai"
 DEFAULT_MODEL = "gpt-5.6-luna"
 
+# Per-request deadline for gateway model calls; without one a stalled gateway
+# holds the run until the upstream proxy cap (~1h). The provider client retries
+# timed-out requests itself up to MODEL_MAX_RETRIES times.
+MODEL_TIMEOUT_S = float(os.environ.get("AMBIENT_ANALYST_MODEL_TIMEOUT_S", "120"))
+MODEL_MAX_RETRIES = 2
+
 model = _required(
     "model",
     lambda: init_chat_model(
@@ -171,6 +177,8 @@ model = _required(
         api_key=_required_env("LC_GATEWAY_KEY"),
         default_headers=_gateway_headers(),
         reasoning_effort="none",
+        timeout=MODEL_TIMEOUT_S,
+        max_retries=MODEL_MAX_RETRIES,
     ),
 )
 
@@ -364,6 +372,8 @@ def _chat_model_from_config(config: RunnableConfig):
         api_key=_required_env("LC_GATEWAY_KEY"),
         default_headers=_gateway_headers(),
         reasoning_effort="none" if provider == "openai" else None,
+        timeout=MODEL_TIMEOUT_S,
+        max_retries=MODEL_MAX_RETRIES,
     )
 
 
