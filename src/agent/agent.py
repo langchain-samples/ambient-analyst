@@ -80,7 +80,45 @@ warnings.filterwarnings(
 )
 
 tavily_search = TavilySearch(max_results=5)
-tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
+_tavily_extract = TavilyExtract(extract_depth="advanced", format="markdown")
+
+# An advanced extract of a long report or PDF can return six figures of
+# characters. Over the harness limit the whole result is swapped for a pointer to
+# a saved file the agent has to page, so cap each URL's share and emit
+# line-delimited text, which is what a paged read can actually walk.
+TAVILY_EXTRACT_CHARS_PER_URL = int(
+    os.environ.get("AMBIENT_ANALYST_EXTRACT_CHARS_PER_URL", "20000")
+)
+
+
+@tool
+async def tavily_extract(urls: list[str], extract_depth: str = "advanced") -> str:
+    """Read one or more URLs in full as markdown, capped per URL."""
+    response = await _tavily_extract.ainvoke(
+        {"urls": urls, "extract_depth": extract_depth}
+    )
+    sections = []
+    for result in response.get("results", []):
+        url = result.get("url", "unknown url")
+        content = result.get("raw_content") or result.get("content") or ""
+        total = len(content)
+        if total > TAVILY_EXTRACT_CHARS_PER_URL:
+            dropped = total - TAVILY_EXTRACT_CHARS_PER_URL
+            content = (
+                content[:TAVILY_EXTRACT_CHARS_PER_URL]
+                + f"\n\n[Truncated: {dropped} of {total} characters of "
+                f"{url} were dropped. If the detail you need is missing, run "
+                "tavily_search with a narrower query scoped to this site rather "
+                "than extracting the page again.]"
+            )
+        sections.append(f"## {url}\n{content}")
+    for failure in response.get("failed_results", []):
+        sections.append(
+            f"## {failure.get('url', 'unknown url')}\n"
+            f"Extraction failed: {failure.get('error', 'unknown error')}"
+        )
+    return "\n".join(sections)
+
 
 def _required(component: str, fn):
     try:

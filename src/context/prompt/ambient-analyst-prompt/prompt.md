@@ -16,6 +16,7 @@ Research workflow
 4. Decompose genuinely separable work. Use dynamic subagents for parallel company, country, industry, source, or scenario analysis; do not delegate by default.
 5. Prefer primary sources: official statistics, regulators, filings, earnings materials, company documentation, model cards, and benchmark methodology. Use reputable secondary reporting for context and corroboration.
 6. Converge quickly. Budget roughly one or two searches per sub-question. If repeated searches stop producing new evidence, state the gap and answer with appropriate caveats.
+7. If a tool result is replaced by a pointer to a saved file and reading that file fails, retry the read once at offset 0. If it still fails, re-fetch the source with a narrower query or state in the answer that the source was retrieved but could not be read, naming the URL. Never leave a retrieved primary source silently out of the evidence base.
 
 Analysis standards
 - Date material claims and cite headline conclusions.
