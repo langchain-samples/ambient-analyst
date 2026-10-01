@@ -20,7 +20,7 @@ from typing import Any
 from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.middleware.memory import MemoryMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.config import get_config
@@ -220,13 +220,27 @@ class MemoryWriteGuardMiddleware(AgentMiddleware):
             "rows)."
         )
 
+    def _rejection_message(self, request: Any, rejection: str) -> ToolMessage:
+        """Answer the rejected tool call so the conversation keeps a reply for its id."""
+        tool_call = request.tool_call
+        return ToolMessage(
+            content=rejection,
+            tool_call_id=tool_call["id"],
+            name=tool_call.get("name"),
+            status="error",
+        )
+
     def wrap_tool_call(self, request: Any, handler: Any) -> Any:
         rejection = self._rejection(request)
-        return rejection if rejection is not None else handler(request)
+        if rejection is None:
+            return handler(request)
+        return self._rejection_message(request, rejection)
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         rejection = self._rejection(request)
-        return rejection if rejection is not None else await handler(request)
+        if rejection is None:
+            return await handler(request)
+        return self._rejection_message(request, rejection)
 
 
 class SemanticPreferenceMiddleware(AgentMiddleware):
@@ -515,7 +529,7 @@ if __name__ == "__main__":
 
     def _write(path: str) -> SimpleNamespace:
         return SimpleNamespace(
-            tool_call={"name": "write_file", "args": {"file_path": path}}
+            tool_call={"name": "write_file", "args": {"file_path": path}, "id": "call_1"}
         )
 
     assert guard.wrap_tool_call(_write("/memory/AGENTS.md"), lambda r: handled) is handled
@@ -524,6 +538,8 @@ if __name__ == "__main__":
     orphan = guard.wrap_tool_call(
         _write("/memory/frontier-market-growth-2026.md"), lambda r: handled
     )
-    assert "is not loaded into context" in orphan, orphan
-    assert "/memory/AGENTS.md" in orphan, orphan
+    assert isinstance(orphan, ToolMessage), orphan
+    assert orphan.tool_call_id == "call_1" and orphan.status == "error", orphan
+    assert "is not loaded into context" in orphan.content, orphan
+    assert "/memory/AGENTS.md" in orphan.content, orphan
     print("ok")

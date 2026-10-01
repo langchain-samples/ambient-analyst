@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 
 from deepagents.backends.protocol import EditResult, WriteResult
+from langchain_core.messages import ToolMessage
 
 from agent.harness import hub
 from agent.harness import memory
@@ -181,3 +182,51 @@ def test_append_memory_event_reads_dict_file_data(monkeypatch):
 
     assert memory._append_memory_event({"i": "new"}) is None
     assert captured[-1].splitlines() == ['{"i": "old"}', '{"i": "new"}']
+
+
+def _memory_write_request(path):
+    return SimpleNamespace(
+        tool_call={
+            "name": "write_file",
+            "args": {"file_path": path, "content": "y"},
+            "id": "call_1",
+        }
+    )
+
+
+def test_memory_write_guard_rejection_answers_tool_call():
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    calls = []
+
+    def _handler(request):
+        calls.append(request)
+
+    async def _ahandler(request):
+        calls.append(request)
+
+    request = _memory_write_request("/memory/x.md")
+    results = [
+        guard.wrap_tool_call(request, _handler),
+        asyncio.run(guard.awrap_tool_call(request, _ahandler)),
+    ]
+
+    for result in results:
+        assert isinstance(result, ToolMessage)
+        assert result.tool_call_id == "call_1"
+        assert result.name == "write_file"
+        assert result.status == "error"
+        assert "/memory/AGENTS.md" in result.content
+    assert calls == []
+
+
+def test_memory_write_guard_allows_injected_path():
+    guard = memory.MemoryWriteGuardMiddleware(["/memory/AGENTS.md"])
+    handled = object()
+
+    async def _ahandler(_request):
+        return handled
+
+    request = _memory_write_request("/memory/AGENTS.md")
+
+    assert guard.wrap_tool_call(request, lambda _r: handled) is handled
+    assert asyncio.run(guard.awrap_tool_call(request, _ahandler)) is handled
