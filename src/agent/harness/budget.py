@@ -119,3 +119,35 @@ class StepBudgetMiddleware(AgentMiddleware):
         if self._over_budget(request):
             request = self._force_final(request)
         return await handler(request)
+
+
+class ParallelToolCallCapMiddleware(AgentMiddleware):
+    """Trim a model turn's tool calls to `max_calls` so one message can't fan out unboundedly."""
+
+    # Excess calls are removed from the AIMessage rather than answered with error
+    # ToolMessages: the provider rejects the oversized tool_calls array itself on
+    # the next model call (OpenAI caps it at 128), and removed ids need no reply.
+    def __init__(self, max_calls: int = 12) -> None:
+        self.max_calls = max_calls
+
+    def after_model(self, state: Any, runtime: Runtime) -> dict[str, Any] | None:
+        """Replace the last AIMessage with a copy holding at most `max_calls` tool calls."""
+        messages = state["messages"]
+        last = messages[-1] if messages else None
+        if not isinstance(last, AIMessage):
+            return None
+        if len(last.tool_calls) + len(last.invalid_tool_calls) <= self.max_calls:
+            return None
+        tool_calls = last.tool_calls[: self.max_calls]
+        invalid_tool_calls = last.invalid_tool_calls[: self.max_calls - len(tool_calls)]
+        return {
+            "messages": [
+                last.model_copy(
+                    update={"tool_calls": tool_calls, "invalid_tool_calls": invalid_tool_calls}
+                )
+            ]
+        }
+
+    async def aafter_model(self, state: Any, runtime: Runtime) -> dict[str, Any] | None:
+        """Async variant of `after_model`."""
+        return self.after_model(state, runtime)

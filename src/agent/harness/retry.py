@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from langchain.agents.middleware import ModelRetryMiddleware
+from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddleware
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
@@ -23,6 +23,18 @@ def rate_limit_retry_middleware() -> ModelRetryMiddleware:
         on_failure="continue",
         initial_delay=2,
         max_delay=30,
+    )
+
+
+def subagent_failure_middleware() -> ToolRetryMiddleware:
+    """Return a failed `task` subagent to the parent as an error ToolMessage instead of ending the run."""
+    return ToolRetryMiddleware(
+        max_retries=0,
+        tools=["task"],
+        on_failure=lambda exc: (
+            f"Subagent failed with {type(exc).__name__}: {exc}. Do not re-dispatch "
+            "the same task; continue with the evidence already gathered."
+        ),
     )
 
 

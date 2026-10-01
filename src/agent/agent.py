@@ -46,7 +46,11 @@ from langsmith import Client
 from langsmith.sandbox import SandboxClient
 from langgraph.types import Command
 
-from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
+from agent.harness.budget import (
+    ParallelToolCallCapMiddleware,
+    RecursionFloorMiddleware,
+    StepBudgetMiddleware,
+)
 from agent.harness.citations import CitationGuardMiddleware
 from agent.harness.context import MEMORY_REPO, SKILL_HANDLES, prompt_identifier
 from agent.harness.hub import ResilientHubBackend
@@ -61,7 +65,7 @@ from agent.harness.memory import (
     run_context_interpreter,
 )
 from agent.harness.pii import PIIRedactionMiddleware
-from agent.harness.retry import rate_limit_retry_middleware
+from agent.harness.retry import rate_limit_retry_middleware, subagent_failure_middleware
 from agent.harness.visualization import share_visualization
 
 import dotenv
@@ -126,6 +130,9 @@ MEMORY_BUDGET_STRICT = os.environ.get("AMBIENT_ANALYST_MEMORY_STRICT", "") == "1
 # Bounded research: hard step backstop + graceful final-answer turn budget.
 RECURSION_LIMIT = 75
 MAX_MODEL_TURNS = 25
+# Subagents don't inherit the main agent's middleware, so workers carry their own caps.
+MAX_SUBAGENT_MODEL_TURNS = 15
+MAX_PARALLEL_TOOL_CALLS = 12
 
 client = Client()
 DEFAULT_SYSTEM_PROMPT = _required(
@@ -276,8 +283,14 @@ DYNAMIC_SUBAGENTS = [
             "You are a macroeconomic and business analysis specialist. Evaluate "
             "the assigned unit, separate facts from inference, quantify material "
             "drivers where possible, identify risks and counterarguments, and "
-            "cite dated primary sources. Return a concise analyst brief."
+            "cite dated primary sources. Return a concise analyst brief. Issue at "
+            "most 8 searches per turn and do not enumerate site: variants of the "
+            "same query."
         ),
+        "middleware": [
+            ParallelToolCallCapMiddleware(max_calls=MAX_PARALLEL_TOOL_CALLS),
+            StepBudgetMiddleware(max_model_turns=MAX_SUBAGENT_MODEL_TURNS),
+        ],
     },
     {
         "name": "memory-consolidator",
@@ -321,6 +334,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         skills=["/skills/"],
         subagents=DYNAMIC_SUBAGENTS,
         middleware=[
+            subagent_failure_middleware(),
             rate_limit_retry_middleware(),
             PIIRedactionMiddleware(),
             CitationGuardMiddleware(),
