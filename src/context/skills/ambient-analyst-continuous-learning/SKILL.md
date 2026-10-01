@@ -24,32 +24,26 @@ After any meaningful research task, before you finish, ask:
 4. **Did I hit a methodology improvement?** → note it (e.g. "LiveCodeBench is more reliable than HumanEval for recency"). Consider whether it belongs in a skill rather than memory (see below).
 5. **What's still open or stale?** → add to an "Open questions / to re-verify" list with dates, so future-you knows what to chase.
 
-## AGENTS.md structure (keep these sections)
+## How to write to AGENTS.md
 
-```markdown
-# LLM Research Agent — Memory
+Every `## ` heading in `/memory/AGENTS.md` already exists and is a **unique anchor**. Writing a new entry means appending a bullet inside the section that owns it, never re-creating the section. To add one entry:
 
-## Role & standing context
-<who I am, what I optimize for>
+1. `grep` the heading in `/memory/AGENTS.md` and confirm it matches exactly once.
+2. `read_file` the ~20 lines after that match to find the section's last bullet.
+3. `edit_file` with `old_string` set to that last bullet and `new_string` set to that same bullet followed by your new dated bullet.
 
-## User preferences
-- <preference> (learned YYYY-MM-DD)
+The sections that exist, and what belongs in each:
 
-## Learnings (methodology & domain)
-- <durable insight> (YYYY-MM-DD, source if applicable)
-
-## Trusted sources
-- <source> — why reliable
-
-## Sources to distrust / handle with care
-- <source> — why
-
-## Open questions / to re-verify
-- [ ] <thing> (since YYYY-MM-DD)
-```
+- `## Role & standing context` — who I am, what I optimize for.
+- `## User preferences` — `- <preference> (learned YYYY-MM-DD)`.
+- `## Learnings (methodology & domain)` — `- YYYY-MM-DD: <durable insight>`, with source if applicable.
+- `## Trusted sources` — `- <source> — why reliable`.
+- `## Sources to distrust / handle with care` — `- <source> — why`.
+- `## Open questions / to re-verify` — `- [ ] <thing> (since YYYY-MM-DD)`.
 
 ## Memory hygiene
 
+- **Never emit a heading.** Don't put a `## ` line in `new_string` unless the same heading also appears in `old_string` — a re-emitted heading creates a second section with the same title and breaks the anchor for everyone. If a heading is reported as appearing more than once, report the duplication in your answer instead of guessing an anchor.
 - **Update promptly**, in the same turn, once you have enough context to record something accurately — don't defer it to "later".
 - **Capture the why**, not just the what. Encode corrections as reusable principles.
 - **Date entries** so freshness is auditable.

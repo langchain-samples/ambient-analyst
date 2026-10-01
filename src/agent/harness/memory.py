@@ -37,6 +37,7 @@ MEMORY_EVENTS_MAX_LINES = 500
 COLD_MEMORY_PATH = "/memory/cold-path-memory.md"
 MEMORY_WRITE_TOOLS = frozenset({"write_file", "edit_file"})
 HARNESS_MEMORY_PATHS = frozenset({MEMORY_EVENTS_PATH, COLD_MEMORY_PATH})
+_HEADING_PATTERN = re.compile(r"^##+ \S.*$", re.M)
 MEMORY_TRUNCATION_NOTICE = (
     "[MEMORY TRUNCATED: {elided} of {total} characters of {path} were elided to "
     "stay within the {budget}-character memory budget, so what you see above is "
@@ -95,6 +96,33 @@ def _append_memory_event(event: dict[str, Any]) -> str | None:
     lines.append(json.dumps(event, sort_keys=True))
     result = _safe_hub_call(backend.write, MEMORY_EVENTS_FILE, "\n".join(lines) + "\n")
     return hub_result_value(result, "error")
+
+
+def _read_memory_file(path: str) -> str | None:
+    """Read a mounted /memory/ file from the Hub, returning None when unreadable."""
+    backend = _safe_hub_call(ContextHubBackend, MEMORY_REPO)
+    if isinstance(backend, _FailedHubCall):
+        return None
+    result = _safe_hub_call(backend.read, path.removeprefix("/memory/"))
+    if isinstance(result, _FailedHubCall) or hub_result_value(result, "error"):
+        return None
+    file_data = hub_result_value(result, "file_data")
+    return None if file_data is None else hub_result_content(file_data)
+
+
+def _headings(text: str) -> list[str]:
+    return [match.group(0).strip() for match in _HEADING_PATTERN.finditer(text)]
+
+
+def _duplicated_headings(
+    current: str, old: str, new: str, *, whole_file: bool
+) -> list[str]:
+    """Return headings the proposed write would leave appearing twice in the file."""
+    counts: Counter[str] = Counter()
+    if not whole_file:
+        counts = Counter(_headings(current)) - Counter(_headings(old))
+    counts += Counter(_headings(new))
+    return [heading for heading in dict.fromkeys(_headings(new)) if counts[heading] > 1]
 
 
 def _latest_human_text(state: Any) -> str:
@@ -209,15 +237,42 @@ class MemoryWriteGuardMiddleware(AgentMiddleware):
         tool_call = getattr(request, "tool_call", None) or {}
         if tool_call.get("name") not in MEMORY_WRITE_TOOLS:
             return None
-        path = (tool_call.get("args") or {}).get("file_path")
+        args = tool_call.get("args") or {}
+        path = args.get("file_path")
         if not isinstance(path, str) or not path.startswith("/memory/"):
             return None
         if path in self.allowed_paths:
-            return None
+            return self._duplicate_heading_rejection(path, args)
         return (
             f"Rejected: {path} is not loaded into context. Durable findings must be "
             "written to /memory/AGENTS.md (or /memory/scorecard.md for LLM scorecard "
             "rows)."
+        )
+
+    def _duplicate_heading_rejection(self, path: str, args: dict) -> str | None:
+        if path in HARNESS_MEMORY_PATHS:
+            return None
+        whole_file = "content" in args
+        proposed = args.get("content") if whole_file else args.get("new_string")
+        if not isinstance(proposed, str) or not _headings(proposed):
+            return None
+        current = _read_memory_file(path)
+        if current is None:
+            # An unreadable corpus must not block a durable save.
+            return None
+        old = args.get("old_string")
+        duplicated = _duplicated_headings(
+            current, old if isinstance(old, str) else "", proposed, whole_file=whole_file
+        )
+        if not duplicated:
+            return None
+        return (
+            f"Rejected: the heading {duplicated[0]!r} already exists in {path}, and "
+            "every heading there is a unique anchor — re-emitting it would create a "
+            "second section with the same title and leave neither usable as an "
+            "anchor. Append inside the existing section instead: read the lines under "
+            "that heading, then set old_string to its last bullet and new_string to "
+            "that same bullet plus your new one."
         )
 
     def wrap_tool_call(self, request: Any, handler: Any) -> Any:
@@ -526,4 +581,56 @@ if __name__ == "__main__":
     )
     assert "is not loaded into context" in orphan, orphan
     assert "/memory/AGENTS.md" in orphan, orphan
+
+    class HubCorpus:
+        def __init__(self, identifier: str) -> None:
+            self.identifier = identifier
+
+        def read(self, *args, **kwargs):
+            return SimpleNamespace(
+                error=None,
+                file_data=SimpleNamespace(
+                    content="# Memory\n\n## Learnings\n- old bullet\n\n"
+                    "## Trusted sources\n- a source\n"
+                ),
+            )
+
+    ContextHubBackend = HubCorpus
+
+    def _edit(old: str, new: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            tool_call={
+                "name": "edit_file",
+                "args": {
+                    "file_path": "/memory/AGENTS.md",
+                    "old_string": old,
+                    "new_string": new,
+                },
+            }
+        )
+
+    duplicate = guard.wrap_tool_call(
+        _edit("## Trusted sources\n", "## Learnings\n- new bullet\n"), lambda r: handled
+    )
+    assert "already exists" in duplicate, duplicate
+    assert "## Learnings" in duplicate, duplicate
+    assert (
+        guard.wrap_tool_call(
+            _edit("## Learnings\n", "## Learnings\n- new bullet\n"), lambda r: handled
+        )
+        is handled
+    )
+    assert (
+        guard.wrap_tool_call(
+            _edit("- old bullet", "- old bullet\n- new bullet"), lambda r: handled
+        )
+        is handled
+    )
+    cold_write = SimpleNamespace(
+        tool_call={
+            "name": "write_file",
+            "args": {"file_path": COLD_MEMORY_PATH, "content": "## Learnings\n- x\n"},
+        }
+    )
+    assert guard.wrap_tool_call(cold_write, lambda r: handled) is handled
     print("ok")
