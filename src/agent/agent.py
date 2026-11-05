@@ -43,7 +43,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_tavily import TavilyExtract, TavilySearch
 from langsmith import Client
-from langsmith.sandbox import SandboxClient
+from langsmith.sandbox import AsyncSandboxClient
 from langgraph.types import Command
 
 from agent.harness.budget import RecursionFloorMiddleware, StepBudgetMiddleware
@@ -104,10 +104,11 @@ def _gateway_headers() -> dict[str, str]:
 
 PROMPT_NAME = os.environ.get("AMBIENT_ANALYST_PROMPT_NAME", "ambient-analyst-prompt")
 
-# Stable sandbox for analysis artifacts.
+# Thread-scoped sandbox settings.
 SANDBOX_NAME = os.environ.get(
     "AMBIENT_ANALYST_SANDBOX", "ambient-analyst-sandbox"
 )
+SANDBOX_IDLE_TTL_SECONDS = 600
 
 # Memory files loaded into context every run. Order matters: the durable
 # instructions come first and are kept head-first when the budget bites, the
@@ -174,61 +175,72 @@ model = _required(
     ),
 )
 
-# Mount a persistent analysis environment. Create it on first startup and reuse
-# it across runs so generated datasets and artifacts remain available.
-sandbox_routes = {}
-sandbox = None
-try:
-    sandbox_client = SandboxClient()
-    sandbox = next(
-        (
-            item
-            for item in sandbox_client.list_sandboxes()
-            if getattr(item, "name", None) == SANDBOX_NAME
-        ),
-        None,
-    )
-    if sandbox is None:
-        try:
-            sandbox = sandbox_client.create_sandbox(name=SANDBOX_NAME)
-        except Exception as exc:
-            if "already exists" not in str(exc) and "409" not in str(exc):
-                raise
-            sandbox = sandbox_client.start_sandbox(SANDBOX_NAME)
-    if sandbox.status != "ready":
-        sandbox = sandbox_client.start_sandbox(SANDBOX_NAME)
-    sandbox_routes["/analysis/"] = LangSmithSandbox(sandbox)
-except Exception as exc:  # noqa: BLE001 — sandbox is optional at startup
-    logger.warning(
-        "Analysis sandbox %r unavailable (%s); /analysis/ route disabled.",
-        SANDBOX_NAME,
-        exc,
-    )
-ANALYSIS_SANDBOX_MOUNTED = "/analysis/" in sandbox_routes
+async def _sandbox_for_thread(config: RunnableConfig):
+    thread_id = (config or {}).get("configurable", {}).get("thread_id")
+    if not thread_id:
+        logger.info("No thread_id yet; deferring analysis sandbox creation")
+        return None
+
+    client = AsyncSandboxClient()
+    try:
+        name = f"{SANDBOX_NAME}-{thread_id}"
+        sandboxes = await client.list_sandboxes()
+        sandbox = next(
+            (item for item in sandboxes if getattr(item, "name", None) == name),
+            None,
+        )
+        if sandbox is None:
+            try:
+                sandbox = await client.create_sandbox(
+                    name=name,
+                    idle_ttl_seconds=SANDBOX_IDLE_TTL_SECONDS,
+                    # LangSmith deletes stopped sandboxes after this minimum sweep interval.
+                    delete_after_stop_seconds=60,
+                )
+            except Exception as exc:
+                if "already exists" not in str(exc) and "409" not in str(exc):
+                    raise
+                sandbox = await client.get_sandbox(name)
+        if sandbox.status == "provisioning":
+            sandbox = await client.wait_for_sandbox(name)
+        elif sandbox.status == "stopped":
+            sandbox = await client.start_sandbox(name)
+        elif sandbox.status != "ready":
+            raise RuntimeError(sandbox.status_message or f"sandbox status: {sandbox.status}")
+        return sandbox.to_sync()
+    except Exception as exc:
+        logger.warning(
+            "Analysis sandbox unavailable for thread %r (%s); continuing without it.",
+            thread_id,
+            exc,
+        )
+        return None
+    finally:
+        await client.aclose()
 
 
-@tool(return_direct=True)
-def share_visualization_link(path: str, runtime: ToolRuntime) -> Command:
-    """Publish HTML under /analysis/ as the final user-facing response."""
-    if not ANALYSIS_SANDBOX_MOUNTED:
-        raise RuntimeError("the analysis sandbox is unavailable")
-    link = share_visualization(sandbox, path)
-    response = f"[Open visualization]({link.download_url})\n\nExpires in one hour."
-    return Command(
-        update={
-            "messages": [
-                ToolMessage(content="Visualization published.", tool_call_id=runtime.tool_call_id),
-                AIMessage(content=response),
-            ]
-        }
-    )
+def _share_visualization_link(sandbox):
+    @tool(return_direct=True)
+    def share_visualization_link(path: str, runtime: ToolRuntime) -> Command:
+        """Publish HTML under /analysis/ as the final user-facing response."""
+        link = share_visualization(sandbox, path)
+        response = f"[Open visualization]({link.download_url})\n\nExpires in one hour."
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(content="Visualization published.", tool_call_id=runtime.tool_call_id),
+                    AIMessage(content=response),
+                ]
+            }
+        )
+
+    return share_visualization_link
 
 
 TOOLS = {
     "tavily_search": tavily_search,
     "tavily_extract": tavily_extract,
     "run_context_interpreter": run_context_interpreter,
-    "share_visualization_link": share_visualization_link,
 }
 DEFAULT_TOOLS = list(TOOLS.values())
 
@@ -246,14 +258,17 @@ recreate the visualization.
 # Scratch files stay ephemeral in state; /skills serves the pulled skill repos;
 # /memory persists to the LangSmith Context Hub; /analysis/ is the managed
 # sandbox for calculations and artifacts.
-backend = CompositeBackend(
-    default=StateBackend(),
-    routes={
+def _backend(sandbox=None):
+    routes = {
         "/skills/": skills_backend,
         "/memory/": ResilientHubBackend(ContextHubBackend(MEMORY_REPO), max_retries=3),
-        **sandbox_routes,
-    },
-)
+    }
+    if sandbox is not None:
+        routes["/analysis/"] = LangSmithSandbox(sandbox)
+    return CompositeBackend(default=StateBackend(), routes=routes)
+
+
+backend = _backend()
 
 # Catch unbounded memory growth at startup rather than in production token spend.
 check_memory_corpus(
@@ -299,13 +314,11 @@ DYNAMIC_SUBAGENTS = [
 def assistant_settings(config: RunnableConfig | None) -> tuple[str, list["BaseTool"]]:
     cfg = (config or {}).get("configurable") or {}
     names = cfg.get("tools")
-    tools = [TOOLS[n] for n in names if n in TOOLS] if names is not None else DEFAULT_TOOLS
-    if share_visualization_link not in tools:
-        tools.append(share_visualization_link)
+    tools = [TOOLS[n] for n in names if n in TOOLS] if names is not None else list(DEFAULT_TOOLS)
     return cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT, tools
 
 
-def build_agent(chat_model=None, system_prompt=None, tools=None):
+def build_agent(chat_model=None, system_prompt=None, tools=None, agent_backend=None):
     """Build the Ambient Analyst agent.
 
     `chat_model`/`system_prompt`/`tools` default to the standard model, the Hub
@@ -317,7 +330,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
         model=chat_model or model,
         tools=DEFAULT_TOOLS if tools is None else tools,
         system_prompt=(system_prompt or DEFAULT_SYSTEM_PROMPT) + VISUALIZATION_INSTRUCTIONS,
-        backend=backend,
+        backend=agent_backend or backend,
         skills=["/skills/"],
         subagents=DYNAMIC_SUBAGENTS,
         middleware=[
@@ -332,7 +345,7 @@ def build_agent(chat_model=None, system_prompt=None, tools=None):
             # bounds the cost. AnthropicPromptCachingMiddleware is inert here:
             # this agent runs an OpenAI model through the gateway.
             BudgetedMemoryMiddleware(
-                backend=backend,
+                backend=agent_backend or backend,
                 sources=MEMORY_SOURCES,
                 add_cache_control=True,
                 char_budget=MEMORY_CHAR_BUDGET,
@@ -367,14 +380,18 @@ def _chat_model_from_config(config: RunnableConfig):
     )
 
 
-def make_agent(config: RunnableConfig):
+async def make_agent(config: RunnableConfig):
     """Graph factory: build the agent from the assistant's config (prompt + tools).
     """
     system_prompt, tools = assistant_settings(config)
+    sandbox = await _sandbox_for_thread(config)
+    if sandbox is not None:
+        tools.append(_share_visualization_link(sandbox))
     return build_agent(
         chat_model=_chat_model_from_config(config),
         system_prompt=system_prompt,
         tools=tools,
+        agent_backend=_backend(sandbox),
     )
 
 
