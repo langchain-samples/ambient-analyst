@@ -2,7 +2,7 @@
 """
 Seed LangSmith traces for the "ambient analyst" macro business/strategy agent.
 
-Runs 50 conversations against a LangGraph Platform deployment concurrently.
+Runs selected conversation batches against a LangGraph Platform deployment concurrently.
 Some conversations are one-off questions; others are multi-turn (each follow-up
 runs on the SAME thread so the trace shows a real back-and-forth).
 
@@ -13,12 +13,12 @@ Docs this is based on:
 
 Usage:
     export LANGSMITH_API_KEY=lsv2_...        # or LANGCHAIN_API_KEY
-    uv run python seed/seeds.py                     # run all 50
+    uv run python seed/seeds.py                     # run batch 1
+    uv run python seed/seeds.py --batches 1 2       # run both batches
     uv run python seed/seeds.py --concurrency 10    # cap in-flight conversations
     uv run python seed/seeds.py --limit 5 --dry-run # preview without calling the API
 
-The deployment URL defaults to the ambient-analyst prod deployment but can be
-overridden with --url or the DEPLOYMENT_URL env var. The assistant defaults to
+Set the deployment URL with --url or the DEPLOYMENT_URL env var. The assistant defaults to
 ambient-analyst, not the lighter ambient-analyst-simple graph.
 """
 
@@ -34,17 +34,15 @@ import dotenv
 
 dotenv.load_dotenv()
 
-# DEFAULT_URL = "https://ambient-analyst-green-fa41f97de119549eb13db912e4607dc8.us.langgraph.app"
-DEFAULT_URL = "https://ambient-analyst-green-a86a264c5ac852af8d2879af1db188ab.us.langgraph.app"
 DEFAULT_ASSISTANT = "ambient-analyst"
 
 # ---------------------------------------------------------------------------
-# 50 seed conversations.
+# Batch 1: 50 seed conversations.
 # Each conversation is a list of user turns:
 #   - length 1  -> a one-off question
 #   - length >1 -> initial question + follow-ups (all on the same thread)
 # ---------------------------------------------------------------------------
-CONVERSATIONS: list[dict] = [
+BATCH_1: list[dict] = [
     # ---- One-off questions --------------------------------------------------
     {"title": "USD strength drivers", "turns": [
         "What's driving the recent strength in the US dollar, and which sectors benefit most? Include a simple visual comparing the main drivers and sector beneficiaries.",
@@ -256,6 +254,120 @@ CONVERSATIONS: list[dict] = [
     ]},
 ]
 
+# Batch 2: 100 additional conversations.
+BATCH_2: list[dict] = [
+    {"title": row[0], "turns": list(row[1:])}
+    for row in [
+        ("Central bank divergence", "How will diverging Fed, ECB, and BOJ policy paths affect currencies, rates, and global equities over the next year?"),
+        ("Treasury term premium", "What is driving the US Treasury term premium, and which assets are most sensitive to a sustained increase?"),
+        ("Quantitative tightening", "Is quantitative tightening materially tightening financial conditions, or is private liquidity offsetting it?"),
+        ("Inflation expectations", "Which market and survey measures best reveal whether inflation expectations are becoming unanchored?"),
+        ("Services inflation", "Why is services inflation sticky, and what evidence would show that it is finally normalizing?"),
+        ("Food inflation", "Map the main weather, energy, fertilizer, and trade-policy risks to global food inflation."),
+        ("Container shipping", "Are elevated container shipping rates temporary disruption or evidence of structurally higher logistics costs?"),
+        ("Red Sea trade routes", "Quantify the economic effects of persistent Red Sea shipping disruption by industry and region."),
+        ("Panama Canal constraints", "How do Panama Canal capacity constraints affect commodity flows, freight rates, and US supply chains?"),
+        ("Global LNG market", "How will new LNG capacity change regional gas prices and the bargaining power of producers and buyers?"),
+        ("Uranium cycle", "Assess the uranium supply-demand balance and the strongest risks to the nuclear fuel investment thesis."),
+        ("Lithium reset", "Has the lithium market completed its downcycle, and what would signal a durable recovery?"),
+        ("Rare earth security", "Which rare-earth supply chains are most vulnerable to geopolitical disruption, and where can substitution work?"),
+        ("Steel cycle", "What do steel prices and capacity utilization imply for global manufacturing and construction demand?"),
+        ("Fertilizer economics", "How sensitive are fertilizer producers and farm economics to natural-gas prices and export restrictions?"),
+        ("Water scarcity", "Which industries and regions face the largest economic exposure to water scarcity over the next decade?"),
+        ("Grid modernization", "Where will grid modernization spending create bottlenecks, pricing power, and investment opportunities?"),
+        ("Nuclear renaissance", "Is the nuclear renaissance economically credible once financing, construction risk, and fuel supply are included?"),
+        ("Carbon markets", "Compare the effectiveness and investability of major compliance and voluntary carbon markets."),
+        ("Airline economics", "Can airlines sustain improved margins, or will capacity growth and labor costs restore the old cycle?"),
+        ("Auto affordability", "How are financing costs, incentives, and used-car prices reshaping vehicle affordability and demand?"),
+        ("EV price war", "Who can survive the global EV price war, and which suppliers carry the greatest volume and margin risk?"),
+        ("Battery supply chain", "Identify the tightest links in the battery supply chain and how chemistry changes could shift them."),
+        ("Industrial automation", "Which industries have the clearest economic case for accelerated automation over the next five years?"),
+        ("Robotics and labor", "How quickly can robotics relieve labor shortages without destroying the productivity gains through excess capex?"),
+        ("Pharma patent cliff", "Which pharmaceutical patent expirations matter most, and which companies have credible replacement pipelines?"),
+        ("Obesity drug economics", "Trace how obesity drugs could change healthcare spending, food demand, and employer benefit costs."),
+        ("Biotech funding", "Is the biotech funding cycle reopening, and which indicators distinguish durable recovery from a short rally?"),
+        ("Hospital margins", "What is driving hospital margin recovery, and which labor or reimbursement pressures could reverse it?"),
+        ("Medtech demand", "How durable is procedure-volume growth for medtech companies as healthcare utilization normalizes?"),
+        ("Cybersecurity budgets", "Which cybersecurity categories retain budget priority in a slowdown, and where is vendor consolidation likely?"),
+        ("SaaS consolidation", "What would a mature consolidation cycle look like across enterprise SaaS, and who has acquisition capacity?"),
+        ("Cloud margins", "How much additional margin expansion can cloud platforms achieve without slowing product investment?"),
+        ("AI inference economics", "Compare the cost curves and competitive moats in AI training versus inference infrastructure."),
+        ("Foundry competition", "How should investors evaluate foundry competition across process leadership, yield, subsidies, and geopolitics?"),
+        ("Memory chip cycle", "Where are DRAM and NAND in the cycle, and how does AI demand alter the usual inventory pattern?"),
+        ("Telecom capex", "When will telecom capex recover, and which equipment categories benefit first?"),
+        ("Satellite economics", "Which satellite business models can support attractive returns after launch costs and constellation replacement?"),
+        ("Quantum commercialization", "Which quantum-computing applications have a credible path to commercial value before fault tolerance?"),
+        ("Advertising cycle", "What do digital and traditional advertising trends reveal about consumer demand and business confidence?"),
+        ("Streaming profitability", "Have streaming economics structurally improved, or are current profits mostly the result of temporary cost cuts?"),
+        ("Creator economy", "Where does durable pricing power sit in the creator economy: platforms, tools, agencies, or creators?"),
+        ("Luxury demand", "How exposed is global luxury demand to China, tourism flows, and aspirational-consumer weakness?"),
+        ("Retail shrink", "Separate the evidence from the narrative on retail shrink and quantify its real margin impact."),
+        ("Restaurant margins", "Can restaurants preserve margins as traffic slows and wage inflation remains elevated?"),
+        ("Travel normalization", "Which travel segments still have structural growth after the post-pandemic normalization ends?"),
+        ("Logistics real estate", "Is logistics real estate oversupplied, or do e-commerce and supply-chain redesign support another growth leg?"),
+        ("Office conversion", "Where are office-to-residential conversions economically viable, and why do most proposed projects fail?"),
+        ("Homebuilder advantage", "Why have large homebuilders gained share, and how durable is their financing and land advantage?"),
+        ("Mortgage banking", "How would changing rates affect mortgage originators, servicers, and mortgage insurers differently?"),
+        ("Municipal finance", "Which US municipal issuers face the greatest fiscal pressure from pensions, migration, and commercial property?"),
+        ("Insurance pricing cycle", "Where is property-and-casualty insurance pricing still hard, and which lines are beginning to soften?"),
+        ("Reinsurance capacity", "How are catastrophe losses and alternative capital reshaping reinsurance pricing and capacity?"),
+        ("Asset manager margins", "Which asset-management models are best positioned for fee compression and the shift toward private markets?"),
+        ("ETF market structure", "How is ETF growth changing price discovery, liquidity, and competition among asset managers?"),
+        ("Pension funded status", "How should improved pension funded ratios change corporate allocation and fixed-income demand?"),
+        ("Endowment alternatives", "Are endowments overallocated to illiquid alternatives given slower distributions and higher cash needs?"),
+        ("Venture reset", "What evidence would show that venture valuations, exits, and fund sizes have fully reset?"),
+        ("Private equity exits", "What will unlock the private-equity exit backlog, and which strategies face the greatest pressure?"),
+        ("M&A cycle", "Is the M&A cycle turning, and which sectors have the strongest strategic and financing setup?"),
+        ("IPO reopening", "What conditions are required for a durable IPO reopening rather than a few isolated deals?"),
+        ("Activist investing", "Which balance-sheet and governance conditions make companies most vulnerable to activist campaigns?"),
+        ("Corporate buybacks", "How sensitive are corporate buybacks to earnings, taxes, rates, and executive confidence?"),
+        ("Dividend resilience", "Which sectors have the most resilient dividends under a mild recession and why?"),
+        ("Earnings quality", "Build a practical framework for separating high-quality earnings from accrual-driven or cyclical profits."),
+        ("Accounting red flags", "Which accounting signals most reliably flag deteriorating business quality before headline earnings fall?"),
+        ("Small business credit", "What do small-business credit conditions imply for hiring, investment, and local-bank losses?"),
+        ("Emerging-market dollarization", "When does informal dollarization stabilize an emerging economy, and when does it deepen fragility?"),
+        ("African sovereign debt", "Which African sovereign debt restructurings offer durable recovery versus repeated default risk?"),
+        ("Latin America nearshoring", "Which Latin American economies can capture nearshoring investment beyond Mexico, and what blocks them?"),
+        ("Mexico manufacturing", "Can Mexico convert nearshoring interest into sustained productivity and wage growth?"),
+        ("Brazil rate cycle", "How does Brazil's rate cycle affect its currency, banks, domestic equities, and fiscal outlook?"),
+        ("Argentina stabilization", "What would distinguish durable stabilization in Argentina from another temporary adjustment?"),
+        ("Turkey inflation", "Evaluate Turkey's disinflation path and the risks to policy credibility, banks, and the currency."),
+        ("Gulf diversification", "Which Gulf diversification programs are producing self-sustaining private activity rather than state-led demand?"),
+        ("ASEAN supply chains", "Which ASEAN countries are gaining most from supply-chain diversification, and where are capacity limits emerging?"),
+        ("Korea governance", "How much value could corporate-governance reform unlock in South Korea, and what could prevent it?"),
+        ("Taiwan risk premium", "How should investors quantify Taiwan geopolitical risk across semiconductors, shipping, and global portfolios?"),
+        ("Australia China exposure", "How vulnerable is Australia to a Chinese slowdown once commodities, education, tourism, and housing are included?"),
+        ("Canada household debt", "How does high Canadian household debt change the transmission of rates into housing and consumption?"),
+        ("UK productivity", "Why has UK productivity lagged, and which reforms could plausibly improve it?"),
+        ("German industry", "Can German industry restore competitiveness amid energy, China, labor, and regulatory pressures?"),
+        ("French fiscal outlook", "What adjustment path could stabilize France's public finances without causing a deep slowdown?"),
+        ("Nordic housing", "Compare housing and bank risks across Sweden, Norway, Denmark, and Finland."),
+        ("Defense industrial capacity", "Can Western defense manufacturers expand capacity fast enough, and where are the binding bottlenecks?"),
+        ("Sanctions effectiveness", "Under what conditions do financial and trade sanctions meaningfully alter state behavior?"),
+        ("Tariff pass-through", "Who ultimately bears tariffs across importers, consumers, workers, and foreign producers?"),
+        ("Election fiscal cycles", "How do election cycles change fiscal policy, inflation risk, and sovereign bond performance?"),
+        ("Immigration economics", "Separate the near-term and long-term effects of immigration on wages, housing, inflation, and fiscal balances."),
+        ("Labor participation", "Which policies or demographic shifts could materially raise labor-force participation?"),
+        ("Remote work equilibrium", "Where is remote work settling by industry, and what are the second-order effects on cities and productivity?"),
+        ("Education ROI", "How is the return on higher education changing across fields, institutions, and financing models?"),
+        ("Climate adaptation", "Which climate-adaptation investments offer the highest economic returns, and who will finance them?"),
+        ("Disaster reconstruction", "How do major disasters affect regional growth, inflation, insurance, and migration over time?"),
+        ("Prediction markets", "When do prediction markets outperform surveys and expert forecasts, and where do they systematically fail?"),
+        ("Global soft landing", "Build the case for a synchronized global soft landing.", "Now identify the weakest link in that case.", "Which three indicators would invalidate the base case first?"),
+        ("Stagflation portfolio", "Construct a stagflation scenario for the next two years.", "Which industries gain or lose pricing power?", "How would you stress-test a diversified portfolio against it?"),
+        ("Debt refinancing wall", "Map the corporate debt refinancing wall by sector.", "Which borrowers can absorb higher coupons?", "What would turn a refinancing problem into a default cycle?"),
+        ("AI labor transition", "Estimate how AI adoption could reshape white-collar labor demand.", "Which roles are complemented rather than displaced?", "What macro data would reveal the transition earliest?"),
+        ("Energy security", "Compare US, European, and Asian energy-security strategies.", "Where do cost and resilience objectives conflict?", "Which strategy looks most durable under a supply shock?"),
+    ]
+]
+
+BATCHES = {1: BATCH_1, 2: BATCH_2}
+CONVERSATIONS = BATCH_1
+
+
+def conversations_for_batches(batch_numbers: list[int]) -> list[dict]:
+    return [conversation for number in batch_numbers for conversation in BATCHES[number]]
+
 
 # ---------------------------------------------------------------------------
 # Core logic
@@ -310,8 +422,9 @@ async def main_async(args) -> int:
               file=sys.stderr)
         return 2
 
-    convos = CONVERSATIONS[: args.limit] if args.limit else CONVERSATIONS
-    batch_id = f"seed-{uuid.uuid4().hex[:8]}"
+    convos = conversations_for_batches(args.batches)
+    convos = convos[: args.limit] if args.limit else convos
+    batch_id = f"seed-{'-'.join(map(str, args.batches))}-{uuid.uuid4().hex[:8]}"
 
     n_single = sum(1 for c in convos if len(c["turns"]) == 1)
     n_multi = len(convos) - n_single
@@ -355,14 +468,17 @@ async def main_async(args) -> int:
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Seed LangSmith traces for the ambient analyst agent.")
-    p.add_argument("--url", default=os.environ.get("DEPLOYMENT_URL", DEFAULT_URL),
+    p.add_argument("--url", default=os.environ.get("DEPLOYMENT_URL"),
+                   required="DEPLOYMENT_URL" not in os.environ,
                    help="LangGraph deployment URL")
     p.add_argument("--assistant", default=os.environ.get("ASSISTANT_ID", DEFAULT_ASSISTANT),
                    help=f"Assistant/graph id (default: {DEFAULT_ASSISTANT})")
     p.add_argument("--concurrency", type=int, default=25,
                    help="Max conversations in flight at once (default: 25 = all)")
+    p.add_argument("--batches", nargs="+", type=int, choices=BATCHES, default=[1],
+                   help="Seed batches to run (default: 1)")
     p.add_argument("--limit", type=int, default=0,
-                   help="Only run the first N conversations (0 = all 50)")
+                   help="Only run the first N selected conversations (0 = all)")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the plan without calling the deployment")
     return p.parse_args(argv)
